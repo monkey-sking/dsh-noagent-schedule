@@ -268,3 +268,69 @@ test('onlyOnNew：条目消失不唤醒，冒出新条目才唤醒', async () =>
   assert.equal(wakes.length, 1, '只有新条目那次该唤醒')
   assert.match(wakes[0].prompt, /C 新消息/)
 })
+
+test('唤醒行清理：已投递的一次性任务被删掉，等待投递与其他任务保留', async () => {
+  const dir = await fs.mkdtemp('/tmp/noagent-wake-prune-')
+  const jobsFile = `${dir}/jobs.json`
+  await fs.writeFile(
+    jobsFile,
+    JSON.stringify({
+      jobs: [{
+        id: 'probe',
+        name: '探针',
+        everySeconds: 30,
+        command: 'echo',
+        wakeOnChange: { sessionId: 'session-abc', title: '有新消息', prompt: '{{output}}' },
+      }],
+    }),
+  )
+
+  const RealDate = Date
+  let offset = 0
+  globalThis.Date = class extends RealDate {
+    constructor(...args) { super(...(args.length ? args : [RealDate.now() + offset])) }
+    static now() { return RealDate.now() + offset }
+  }
+
+  const deleted = []
+  const wakes = []
+  const rows = [
+    { id: 'stale-1', sessionId: 'session-abc', kind: 'after', title: '有新消息', status: 'inactive', scheduledAt: new Date(RealDate.now() - 3_600_000).toISOString() },
+    { id: 'stale-2', sessionId: 'session-abc', kind: 'after', title: '有新消息', status: 'inactive', scheduledAt: new Date(RealDate.now() - 3_600_000).toISOString() },
+    { id: 'pending', sessionId: 'session-abc', kind: 'after', title: '有新消息', status: 'active', scheduledAt: new Date(RealDate.now()).toISOString() },
+    { id: 'other-title', sessionId: 'session-abc', kind: 'after', title: '别的任务', status: 'inactive', scheduledAt: new Date(RealDate.now() - 3_600_000).toISOString() },
+    { id: 'cron-row', sessionId: 'session-abc', kind: 'cron', title: '有新消息', status: 'inactive', scheduledAt: new Date(RealDate.now() - 3_600_000).toISOString() },
+    { id: 'other-session', sessionId: 'session-xyz', kind: 'after', title: '有新消息', status: 'inactive', scheduledAt: new Date(RealDate.now() - 3_600_000).toISOString() },
+  ]
+  const ticks = []
+  const ctx = {
+    logger: { info() {} },
+    effect: (fn) => fn(),
+    interval: (cb) => { ticks.push(cb); return () => {} },
+    get: (name) => (name === 'schedule' ? {
+      create: async (sid, req) => { wakes.push({ sid, ...req }); return { id: `sched-${wakes.length}` } },
+      catalog: async () => rows,
+      delete: async ({ id }) => { deleted.push(id); return { id, deleted: true } },
+    } : undefined),
+    subprocess: {
+      spawn: () => ({
+        collected: {
+          stdout: { readFrom: () => ({ text: 'OWED 1 | 张三 | 在吗', nextOffset: 18, lossy: false }) },
+          stderr: { readFrom: () => ({ text: '', nextOffset: 0, lossy: false }) },
+        },
+        done: Promise.resolve({ exitCode: 0, signal: null }),
+        terminate() {},
+      }),
+    },
+  }
+
+  try {
+    apply(ctx, { jobsFile, stateDir: dir, tickSeconds: 1, jobsReloadMs: 0 })
+    await ticks[0]()
+    await new Promise((r) => setTimeout(r, 250))
+  } finally {
+    globalThis.Date = RealDate
+  }
+
+  assert.deepEqual(deleted.sort(), ['stale-1', 'stale-2'], '只清理同名、同 Session、已投递的一次性唤醒行')
+})

@@ -639,6 +639,57 @@ export function apply(ctx, config = {}) {
     return { previous: entry.fingerprintText ?? null, current: text, reason: 'changed' }
   }
 
+  /** 唤醒用的任务标题：与 wakeSession 创建时保持同一份渲染结果。 */
+  const wakeTitleOf = (job) => {
+    const wake = job.wakeOnChange
+    if (wake.title) return renderWakePrompt(wake.title, job, { current: '' })
+    return `[${job.name}]`
+  }
+
+  /**
+   * 清理历史唤醒留下的一次性任务行。
+   *
+   * 每次唤醒都是一次 `after` 一次性任务：投递完成后它变成 inactive 但仍然留在
+   * Host 任务表里，因而出现在「自动化任务」页面。探针每几分钟就唤醒一次，一天
+   * 就是几十条同名「已结束 · 仅一次」，把真正的定时任务挤出屏幕（2026-10-20 实测
+   * 一天 21 条）。这些行只承载一次投递，没有保留价值，投递完就删。
+   *
+   * 只动「本插件的唤醒行」：同一 Session + 同一标题 + kind=after + 已不在等待投递。
+   */
+  const sweepWakeSchedules = async (job, { minAgeMs = 60_000 } = {}) => {
+    const wake = job.wakeOnChange
+    if (!wake) return 0
+    const scheduleSvc = typeof ctx.get === 'function' ? ctx.get('schedule') : ctx.schedule
+    if (!scheduleSvc || typeof scheduleSvc.catalog !== 'function' || typeof scheduleSvc.delete !== 'function') {
+      return 0
+    }
+    let rows
+    try {
+      rows = await scheduleSvc.catalog()
+    } catch (error) {
+      log(`读取任务目录失败（任务 ${job.id}）：${messageOf(error)}`)
+      return 0
+    }
+    if (!Array.isArray(rows)) return 0
+    const title = wakeTitleOf(job)
+    const now = Date.now()
+    let removed = 0
+    for (const row of rows) {
+      if (!row || row.sessionId !== wake.sessionId) continue
+      if (row.kind !== 'after' || row.title !== title) continue
+      if (row.status === 'active') continue // 还在等投递，删了就不会唤醒了
+      const at = Date.parse(row.lastDelivery?.deliveredAt ?? row.scheduledAt ?? '')
+      if (Number.isFinite(at) && now - at < minAgeMs) continue
+      try {
+        const result = await scheduleSvc.delete({ sessionId: row.sessionId, id: row.id })
+        if (result?.deleted) removed += 1
+      } catch (error) {
+        log(`清理历史唤醒失败（任务 ${job.id} / ${row.id}）：${messageOf(error)}`)
+      }
+    }
+    return removed
+  }
+
   /** 把“有新内容”投递到目标会话（schedule 的一次性 trigger，延迟 1 秒）。 */
   const wakeSession = async (job, change) => {
     const wake = job.wakeOnChange
@@ -648,6 +699,9 @@ export function apply(ctx, config = {}) {
       return { ok: false, error: 'schedule_unavailable' }
     }
     const prompt = renderWakePrompt(wake.prompt, job, change)
+    // 新一次唤醒前先收掉上一条已投递的唤醒行，列表里最多只留当前这一条。
+    const pruned = await sweepWakeSchedules(job, { minAgeMs: 0 })
+    if (pruned > 0) log(`已清理 ${pruned} 条历史唤醒任务（任务 ${job.id}）`)
     try {
       const record = await scheduleSvc.create(wake.sessionId, {
         title: wake.title ? renderWakePrompt(wake.title, job, change) : `[${job.name}]`,
@@ -692,6 +746,8 @@ export function apply(ctx, config = {}) {
 
   let jobs = []
   let jobsLoadedAt = 0
+  /** 每个任务最近一次清理唤醒行的时间（tick 节流，避免每轮都读目录）。 */
+  const wakeSweepAt = new Map()
   // 测试与调试用：允许把任务清单的重新读取间隔调小（生产默认 10 秒）。
   const jobsReloadMs = Math.max(0, Number(config.jobsReloadMs ?? 10_000))
 
@@ -730,6 +786,16 @@ export function apply(ctx, config = {}) {
       jobsLoadedAt = Date.now()
     }
     const now = new Date()
+    // 唤醒行清理：一次性唤醒投递完成后就该从「自动化任务」列表里消失，
+    // 否则同名的「已结束 · 仅一次」会一直堆积（见 sweepWakeSchedules）。
+    for (const job of jobs) {
+      if (!job.enabled || !job.wakeOnChange) continue
+      if (now.getTime() - (wakeSweepAt.get(job.id) ?? 0) < 30_000) continue
+      wakeSweepAt.set(job.id, now.getTime())
+      void sweepWakeSchedules(job).then((removed) => {
+        if (removed > 0) log(`已清理 ${removed} 条历史唤醒任务（任务 ${job.id}）`)
+      })
+    }
     for (const job of jobs) {
       if (!job.enabled) continue
       const zone = job.timeZone || defaultTimeZone

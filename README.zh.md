@@ -81,6 +81,14 @@ plugin_manager({ action: "install_bundle", target: "<cloned directory>" })
 | `env` | 追加环境变量 |
 | `timeoutSeconds` | 超时强杀，默认 300 |
 
+### 事件型任务（`wakeOnChange`）
+
+`wakeOnChange` 让脚本输出充当指纹：只有冒出新内容时才把这段输出投进指定会话
+（`sessionId`），其余时间完全零 token。每次唤醒都以一次性任务投递，投递完成后
+由插件自动清理（唤醒前清上一条 + 每 30 秒清理已投递的旧行），不会在
+「自动化任务」列表里堆积同名「已结束 · 仅一次」记录；重启后第一次 tick 会顺带
+清掉升级前遗留的历史唤醒行。
+
 ## 运行产物
 
 ```
