@@ -20,6 +20,18 @@
 
 ## 安装
 
+### 从插件市场（发现页）
+
+在 **插件 > 发现 > 管理索引源** 里添加：
+
+```
+https://raw.githubusercontent.com/monkey-sking/dsh-noagent-schedule/main/index.json
+```
+
+然后插件会出现在发现列表里，带中文说明和图标，点安装即可。（发现标签需要先启用实验性的 plugin-market 组合包。）
+
+### 从本地 checkout
+
 ```
 git clone https://github.com/monkey-sking/dsh-noagent-schedule.git
 plugin_manager({ action: "install_bundle", target: "<cloned directory>" })

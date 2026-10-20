@@ -25,6 +25,18 @@ want it to be — see [wake on change](#wake-on-change).
 
 ## Install
 
+### From the plugin market (Discover)
+
+Open **Plugins > Discover > Manage index sources** and add:
+
+```
+https://raw.githubusercontent.com/monkey-sking/dsh-noagent-schedule/main/index.json
+```
+
+The bundle then appears in the Discover list with its description and icon, and installs like any other entry. (The Discover tab needs the experimental plugin-market bundle enabled.)
+
+### From a checkout
+
 ```
 git clone https://github.com/monkey-sking/dsh-noagent-schedule.git
 plugin_manager({ action: "install_bundle", target: "<cloned directory>" })
