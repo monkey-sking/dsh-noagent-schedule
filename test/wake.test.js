@@ -8,6 +8,7 @@ import {
   normalizeForFingerprint,
   fingerprintOf,
   renderWakePrompt,
+  makeLineKey,
 } from '../index.js'
 
 test('normalizeForFingerprint：忽略噪声行后保持稳定', () => {
@@ -333,4 +334,59 @@ test('唤醒行清理：已投递的一次性任务被删掉，等待投递与�
   }
 
   assert.deepEqual(deleted.sort(), ['stale-1', 'stale-2'], '只清理同名、同 Session、已投递的一次性唤醒行')
+})
+
+test('makeLineKey：keyPattern 只取身份段，正文变化不影响', () => {
+  const keyOf = makeLineKey('^[A-Z_]+ \\| [^|]+ \\| [^|]+')
+  assert.equal(keyOf('UNKNOWN | 张三 | 甲公司 | 10:00 | 在吗'), keyOf('UNKNOWN | 张三 | 甲公司 | 10:30 | 我回复了'))
+  assert.notEqual(keyOf('UNKNOWN | 张三 | 甲公司 | 10:00 | 在吗'), keyOf('UNKNOWN | 张三 | 乙公司 | 10:00 | 在吗'))
+  assert.equal(makeLineKey(undefined)('任意'), '任意', '没配置时整行比较')
+})
+
+test('keyPattern：同一会话正文变了不唤醒，冒出新会话才唤醒', async () => {
+  const dir = await fs.mkdtemp('/tmp/noagent-keypattern-')
+  const jobsFile = `${dir}/jobs.json`
+  await fs.writeFile(
+    jobsFile,
+    JSON.stringify({
+      jobs: [{
+        id: 'probe',
+        everySeconds: 30,
+        command: 'echo',
+        wakeOnChange: {
+          sessionId: 's',
+          onlyOnNew: true,
+          keyPattern: '^[A-Z_]+ \\| [^|]+ \\| [^|]+',
+          ignoreLines: ['^AUTH_OK'],
+          prompt: '{{output}}',
+        },
+      }],
+    }),
+  )
+
+  const RealDate = Date
+  let offset = 0
+  globalThis.Date = class extends RealDate {
+    constructor(...args) { super(...(args.length ? args : [RealDate.now() + offset])) }
+    static now() { return RealDate.now() + offset }
+  }
+
+  const { ctx, ticks, wakes } = makeCtx([
+    'AUTH_OK 2 OWED 1 MODE summary\nUNKNOWN | 张三 | 甲 | 10:00 | 在吗',
+    'AUTH_OK 2 OWED 1 MODE summary\nUNKNOWN | 张三 | 甲 | 10:05 | 我回过了', // 同会话，正文变了
+    'AUTH_OK 3 OWED 2 MODE summary\nUNKNOWN | 张三 | 甲 | 10:05 | 我回过了\nUNKNOWN | 李四 | 乙 | 10:06 | 你好', // 新会话
+  ])
+  try {
+    apply(ctx, { jobsFile, stateDir: dir, tickSeconds: 1, jobsReloadMs: 0 })
+    for (let i = 0; i < 3; i += 1) {
+      await ticks[0]()
+      await new Promise((r) => setTimeout(r, 150))
+      offset += 61_000
+    }
+  } finally {
+    globalThis.Date = RealDate
+  }
+
+  assert.equal(wakes.length, 1, '只有新会话那一次该唤醒')
+  assert.match(wakes[0].prompt, /李四/)
 })

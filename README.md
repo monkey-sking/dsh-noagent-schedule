@@ -140,6 +140,10 @@ How it behaves:
   earlier version are cleaned on the first tick), so "automation tasks" keeps listing only the real
   recurring jobs instead of a wall of identical one-shot entries.
 - Empty output means nothing to report.
+- `onlyOnNew` can be narrowed with `keyPattern`: only the matched part of each line identifies an
+  entry, so a conversation whose last message changes (including our own reply) is not "new"; only a
+  genuinely new conversation wakes the session. Lines unmatched by the pattern fall back to the
+  whole line.
 
 Placeholders in `prompt` and `title`: `{{job}}` (name), `{{id}}` (id), `{{output}}` (truncated to
 4000 characters).

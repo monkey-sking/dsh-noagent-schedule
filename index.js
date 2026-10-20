@@ -209,6 +209,17 @@ export function normalizeJobs(document) {
       if (typeof sessionId !== 'string' || !sessionId.trim()) {
         throw new Error(`任务 ${id} 的 wakeOnChange 缺少 sessionId`)
       }
+      const keyPattern =
+        typeof job.wakeOnChange.keyPattern === 'string' && job.wakeOnChange.keyPattern.trim()
+          ? job.wakeOnChange.keyPattern.trim()
+          : undefined
+      if (keyPattern) {
+        try {
+          new RegExp(keyPattern)
+        } catch (error) {
+          throw new Error(`任务 ${id} 的 wakeOnChange.keyPattern 不是合法正则：${messageOf(error)}`)
+        }
+      }
       wakeOnChange = {
         sessionId: sessionId.trim(),
         title: typeof job.wakeOnChange.title === 'string' ? job.wakeOnChange.title : undefined,
@@ -218,6 +229,7 @@ export function normalizeJobs(document) {
           : [],
         notifyOnFirstRun: job.wakeOnChange.notifyOnFirstRun === true,
         onlyOnNew: job.wakeOnChange.onlyOnNew === true,
+        keyPattern,
       }
     }
 
@@ -318,6 +330,27 @@ export function fingerprintOf(text) {
     hash = ((hash << 5) + hash) ^ text.charCodeAt(i)
   }
   return `${(hash >>> 0).toString(16)}:${text.length}`
+}
+
+/**
+ * 「新条目」比较用的行身份。
+ *
+ * 默认整行比较（受 time/timestamp 之类正文变化影响）；给了 keyPattern 时只比较
+ * 匹配到的那一段，于是同一会话换了最后一条消息、换了我方回复，都不会再算新条目。
+ * 正则无捕获组时取整个匹配；匹配不到就退回整行。
+ */
+export function makeLineKey(keyPattern) {
+  if (typeof keyPattern !== 'string' || !keyPattern.trim()) return (line) => line
+  let re
+  try {
+    re = new RegExp(keyPattern.trim())
+  } catch {
+    return (line) => line
+  }
+  return (line) => {
+    const match = re.exec(line)
+    return match ? match[0] : line
+  }
 }
 
 /**
@@ -626,8 +659,10 @@ export function apply(ctx, config = {}) {
     // onlyOnNew：只关心"冒出新条目"，不关心旧条目消失。
     // 这样"我们回复后该会话从待回复列表里消失"就不会再触发第二次唤醒。
     if (wake.onlyOnNew === true) {
-      const seen = new Set(previousLines)
-      const fresh = lines.filter((line) => !seen.has(line))
+      // keyPattern 让「同一会话换了正文/时间」不算新条目，只有真正冒出新身份才唤醒。
+      const keyOf = makeLineKey(wake.keyPattern)
+      const seen = new Set(previousLines.map(keyOf))
+      const fresh = lines.filter((line) => !seen.has(keyOf(line)))
       state.jobs[job.id] = nextState
       await writeJsonAtomic(statePath, state).catch(() => {})
       if (fresh.length === 0) return null
