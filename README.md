@@ -134,6 +134,11 @@ How it behaves:
   Set `notifyOnFirstRun: true` to opt in.
 - A non-zero exit is never treated as "something changed" — failures show up in the log and the
   status, not as false wakes.
+- Every wake is a one-shot scheduled delivery, and one-shot rows stay in the Host's task table
+  after delivery. The plugin deletes each wake row once it has been delivered (the previous row is
+  removed before the next wake, delivered rows are swept every 30 seconds, and leftovers from an
+  earlier version are cleaned on the first tick), so "automation tasks" keeps listing only the real
+  recurring jobs instead of a wall of identical one-shot entries.
 - Empty output means nothing to report.
 
 Placeholders in `prompt` and `title`: `{{job}}` (name), `{{id}}` (id), `{{output}}` (truncated to
