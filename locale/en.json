@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "No-Agent Schedule",
+    "description": "Runs shell scripts on a schedule inside the Host with no model call and no token cost. Adds a Settings page and a sidebar panel that list the scripts, their last run, a run-now button, and the last log."
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "jobs": [
+    {
+      "id": "nightly-backup",
+      "name": "Nightly backup",
+      "enabled": false,
+      "cron": "0 3 * * *",
+      "timeZone": "Asia/Shanghai",
+      "cwd": "/srv/app",
+      "command": "bash scripts/backup.sh",
+      "timeoutSeconds": 600
+    },
+    {
+      "id": "heartbeat",
+      "name": "Heartbeat",
+      "enabled": true,
+      "everySeconds": 300,
+      "cwd": "/tmp",
+      "command": "date '+%F %T heartbeat ok'",
+      "timeoutSeconds": 30
+    },
+    {
+      "id": "inbox-watch",
+      "name": "Inbox watch (wake on change)",
+      "enabled": false,
+      "everySeconds": 120,
+      "cwd": "/srv/app",
+      "command": "bash scripts/probe-inbox.sh",
+      "wakeOnChange": {
+        "sessionId": "replace-with-your-session-id",
+        "title": "New mail",
+        "prompt": "Probe found something new:\n\n{{output}}\n\nHandle it; reply [SILENT] if nothing needs doing.",
+        "ignoreLines": [
+          "^ts="
+        ]
+      }
+    }
+  ]
+}

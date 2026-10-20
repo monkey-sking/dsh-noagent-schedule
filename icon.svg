@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="No-Agent Schedule">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f2937"/>
+      <stop offset="1" stop-color="#0b1220"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bg)"/>
+  <circle cx="32" cy="32" r="21" fill="none" stroke="#38bdf8" stroke-width="2.5" opacity="0.85"/>
+  <path d="M32 17v15l10 6" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M23 40l5 4-5 4" fill="none" stroke="#f8fafc" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M32 44h10" fill="none" stroke="#f8fafc" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

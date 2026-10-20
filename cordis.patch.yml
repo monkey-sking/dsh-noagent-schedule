@@ -1,0 +1,20 @@
+# dsh-noagent-schedule — 零 token 定时脚本
+#
+# 到点由 Host 直接起子进程跑脚本，不唤醒模型、不消耗 token。
+# 任务清单在 $DSH_HOME/noagent/jobs.json（默认 ~/.dsh/noagent/jobs.json），
+# 改完 10 秒内自动生效，无需重启。
+
+- insert:
+    - id: noagent-schedule
+      name: 'dsh-noagent-schedule'
+      inject:
+        - subprocess
+        - timer
+      config:
+        enabled: true
+        # jobsFile / stateDir 省略即用默认：
+        #   ~/.dsh/noagent/jobs.json   ~/.dsh/noagent/state
+        # 想放别处再显式指定绝对路径。
+        tickSeconds: 20
+        defaultTimeZone: Asia/Shanghai
+        maxCollectedBytes: 262144

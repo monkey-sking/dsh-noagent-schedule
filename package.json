@@ -1,0 +1,64 @@
+{
+  "name": "dsh-noagent-schedule",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Zero-token scheduled script runner for DeepSeek Harness: runs shell commands on a cron schedule inside the Host without waking the model, with conditional wake-on-change, a settings page and a sidebar panel.",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.zh.md",
+    "LICENSE",
+    "jobs.example.json"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "cron",
+    "scheduler",
+    "no-agent"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.0-rc.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/monkey-sking/dsh-noagent-schedule.git"
+  },
+  "homepage": "https://github.com/monkey-sking/dsh-noagent-schedule#readme",
+  "bugs": {
+    "url": "https://github.com/monkey-sking/dsh-noagent-schedule/issues"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "author": "monkey-sking"
+}
