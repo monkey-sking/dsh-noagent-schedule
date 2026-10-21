@@ -108,6 +108,18 @@
           "engines": {
             "dsh": ">=0.2.0-rc.2"
           }
+        },
+        {
+          "version": "0.4.3",
+          "publishTimestamp": 1792559882,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/monkey-sking/dsh-noagent-schedule",
+            "commit": "6431fb87a5a47ed8a692e0570d561ce3505cafde"
+          },
+          "engines": {
+            "dsh": ">=0.2.0-rc.2"
+          }
         }
       ]
     }
