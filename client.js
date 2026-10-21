@@ -563,13 +563,21 @@ window.__ModuleLoader__.load({
     // 样式：全部走宿主主题 token；不在注入清单里的 token 都带兜底，绝不写字面色值。
     // -------------------------------------------------------------------------
     const CSS = `
-      .noagent-root { display: flex; flex-direction: column; gap: 14px; color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; }
-      .noagent-page { padding: 24px; height: 100%; width: 100%; box-sizing: border-box; overflow: auto; }
+      .noagent-root { display: flex; flex-direction: column; color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; }
+      /* 滚动区里的每一块都按内容高度排，绝不参与 flex 收缩 ——
+         否则内容一多，表格会被压扁到视口高，既不溢出也就没有滚动条。 */
+      .noagent-scroll > * { flex: 0 0 auto; }
+
+      /* 外层：撑满宿主给的高度。关键是一起写 overflow:hidden + min-height:0 ——
+         只写 min-height:0 而不裁，内容是 flex 子项时父盒会被撑高，内层就没有可滚区域了。 */
+      .noagent-page { display: flex; flex-direction: column; height: 100%; max-height: 100%; width: 100%; min-height: 0; box-sizing: border-box; overflow: hidden; }
+      /* 内层：真正滚动的那个盒子。显式 min-height:0 + flex:1，内容超了才出滚动条。 */
+      .noagent-scroll { flex: 1 1 auto; min-height: 0; width: 100%; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 14px; padding: 24px; box-sizing: border-box; overscroll-behavior: contain; scrollbar-gutter: stable; }
       .noagent-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
       .noagent-title { margin: 0; font-size: 18px; font-weight: 600; line-height: 26px; }
       .noagent-intro { margin: 4px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; }
 
-      .noagent-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+      .noagent-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; flex: 0 0 auto; }
       .noagent-stat { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 14px; border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-layer-1); color: inherit; font: inherit; text-align: left; cursor: default; }
       .noagent-stat[data-clickable="true"] { cursor: pointer; }
       .noagent-stat[data-clickable="true"]:hover { background: var(--dsw-alias-interactive-bg-hover); }
@@ -589,7 +597,9 @@ window.__ModuleLoader__.load({
       .noagent-seg > button[data-on="true"] { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); font-weight: 600; }
       .noagent-seg > button:hover { background: var(--dsw-alias-interactive-bg-hover); }
 
-      .noagent-table-wrap { border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-layer-1); overflow-x: auto; overflow-y: hidden; }
+      /* 圆角裁切只作用在横向：overflow-y 必须是 visible，否则表格被裁成一张卡的高度，
+         多出来的行既看不见也滚不到（0.4.2 的顶部没滚动条就是这个）。圆角改用 clip-path。 */
+      .noagent-table-wrap { border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-layer-1); overflow-x: auto; overflow-y: visible; clip-path: inset(0 round var(--dsw-radius-lg)); }
       .noagent-table { width: 100%; min-width: 720px; border-collapse: collapse; table-layout: fixed; }
       .noagent-table th { text-align: left; font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-tertiary); padding: 8px 12px; border-bottom: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-2); white-space: nowrap; }
       .noagent-table td { padding: 10px 12px; border-bottom: 1px solid var(--dsw-alias-border-l1); vertical-align: middle; }
@@ -1278,15 +1288,11 @@ window.__ModuleLoader__.load({
       const [openId, setOpenId] = React.useState(null)
       const [logTarget, setLogTarget] = React.useState(null)
 
-      if (status.kind === 'loading' && status.jobs.length === 0) {
-        return h('p', { className: 'noagent-empty' }, t('loading'))
-      }
-      if (status.kind === 'error') {
-        return h('p', { className: 'noagent-empty' }, `${t('loadFailed')} ${status.error || ''}`)
-      }
-      if (status.jobs.length === 0) {
-        return h('p', { className: 'noagent-empty' }, t('empty'))
-      }
+      // 空态 / 错误态也走同一个滚动区，保证任何状态下结构一致。
+      const only = (text) => h(React.Fragment, null, h('p', { className: 'noagent-empty' }, text))
+      if (status.kind === 'loading' && status.jobs.length === 0) return only(t('loading'))
+      if (status.kind === 'error') return only(`${t('loadFailed')} ${status.error || ''}`)
+      if (status.jobs.length === 0) return only(t('empty'))
 
       const now = status.now ?? Date.now()
       const visible = filterJobs(status.jobs, filter, query)
@@ -1356,7 +1362,7 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** 侧边栏点开后占据中央面板的一页。 */
+    /** 侧边栏点开后占据中央面板的一页：标题固定，下面的内容自己滚。 */
     function PanelPage(props) {
       const status = props.useStatus((value) => value)
       return h(
@@ -1365,22 +1371,26 @@ window.__ModuleLoader__.load({
         h(StyleTag),
         h(
           'div',
-          { className: 'noagent-head' },
+          { className: 'noagent-scroll' },
           h(
             'div',
-            null,
-            h('h2', { className: 'noagent-title' }, props.t('title')),
-            h('p', { className: 'noagent-intro' }, props.t('intro')),
+            { className: 'noagent-head' },
+            h(
+              'div',
+              null,
+              h('h2', { className: 'noagent-title' }, props.t('title')),
+              h('p', { className: 'noagent-intro' }, props.t('intro')),
+            ),
+            h(
+              'span',
+              { className: 'noagent-meta' },
+              status.updatedAt
+                ? props.t('updated', { time: humanTime(Date.parse(status.updatedAt), props.lang, 'Asia/Shanghai', Date.now()) })
+                : '',
+            ),
           ),
-          h(
-            'span',
-            { className: 'noagent-meta' },
-            status.updatedAt
-              ? props.t('updated', { time: humanTime(Date.parse(status.updatedAt), props.lang, 'Asia/Shanghai', Date.now()) })
-              : '',
-          ),
+          h(JobsView, { ...props, status }),
         ),
-        h(JobsView, { ...props, status }),
       )
     }
 

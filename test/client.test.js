@@ -328,6 +328,39 @@ test('client.js：展开一行、点日志格子都不会因注入面缺字段�
   assert.equal(detail, undefined, '默认不展开，详情行不渲染')
 })
 
+test('client.js：面板分成固定框 + 自滚动内容区（内容超了要能滚）', async () => {
+  const { exports } = await loadClientModule()
+  const { ctx, registrations } = createClientCtx()
+  exports.apply(ctx)
+
+  const section = registrations.find((item) => item.options.name === 'main')
+  const tree = expand(section.component(faceFor(sampleStatus())))
+  const nodes = flatten(tree)
+
+  // 结构：.noagent-page（外层，裁切）> .noagent-scroll（内层，滚动）
+  const page = nodes.find((node) => node.props && node.props.className === 'noagent-root noagent-page')
+  assert.ok(page, '缺少外层页面容器')
+  const scroll = nodes.find((node) => node.props && node.props.className === 'noagent-scroll')
+  assert.ok(scroll, '缺少内层滚动容器')
+  assert.ok(
+    (page.children ?? []).some((child) => child && child.props && child.props.className === 'noagent-scroll'),
+    '滚动区必须是外层容器的直接子元素',
+  )
+
+  // CSS 不变量：这三条少一条就会「内容超出但没有滚动条」
+  const styleNode = nodes.find((node) => node.type === 'style')
+  assert.ok(styleNode, '缺少样式块')
+  const css = String(styleNode.children[0])
+  assert.match(css, /\.noagent-scroll \{[^}]*overflow-y: auto/, '滚动区必须 overflow-y: auto')
+  assert.match(css, /\.noagent-scroll \{[^}]*min-height: 0/, '滚动区必须 min-height: 0')
+  assert.match(css, /\.noagent-scroll > \* \{[^}]*flex: 0 0 auto/, '滚动区子项不能被 flex 压扁')
+  assert.match(css, /\.noagent-page \{[^}]*overflow: hidden/, '外层必须裁切，否则父盒被内容撑高就没有可滚区域')
+  assert.ok(
+    !/\.noagent-table-wrap \{[^}]*overflow-y: hidden/.test(css),
+    '表格容器不能 overflow-y: hidden —— 会把表格裁成一张卡的高度，多出来的行滚不到',
+  )
+})
+
 test('client.js：计划人话解析（cron / 间隔 / 异常）', async () => {
   const { exports } = await loadClientModule()
   const u = exports.utils
