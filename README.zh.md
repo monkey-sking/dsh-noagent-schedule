@@ -111,10 +111,19 @@ plugin_manager({ action: "install_bundle", target: "<cloned directory>" })
 
 插件带客户端半（`client.js`），装好并重启宿主后：
 
-- **设置页**：设置 → 「定时脚本」，列出全部任务：名称、id、cron 或 `everySeconds`、
-  启用状态、上次运行时间 / 退出码 / 耗时；每条任务有「立即运行一次」和「查看最近日志」。
-- **侧边栏面板**：侧边栏出现一个时钟图标，点开占据中央面板，内容与设置页一致。
-- 打开面板期间每 5 秒自动刷新；「立即运行一次」是前台触发，运行结果由下次刷新带回。
+- **设置页**：设置 → 「定时脚本」；**侧边栏面板**：侧边栏的时钟图标，点开占据中央面板，
+  两边都是同一页。
+- 页面按青龙面板的「定时任务」组织（0.4.0 起）：
+  - **总览卡**：任务总数、启用中、今日运行、近 24h 失败；点「启用中 / 失败」等于切筛选。
+  - **工具条**：搜索（名称 / ID / 命令）、状态筛选（全部 / 启用 / 停用 / 异常）、刷新。
+  - **任务表**：一行一个任务 —— 状态灯 + 名称 + 命令摘要、计划、上次 / 下次运行、最近 8 次结果。
+  - **计划说人话**：`30 18 * * *` 显示成「每天 18:30」，`*/15 * * * *` 是「每 15 分钟」，
+    `0 9 * * 1-5` 是「周一、周二…09:00」；cron 原文在悬停时给出，解析不了就标红并显示原文。
+  - **上次 / 下次相对时间**：「3 分钟前」「今天 18:30」「明天 08:40」「11 天后 09:15」。
+  - **最近几次结果**：一排小竖条，绿=成功、红=失败，点任意一条看那一次的日志。
+  - **日志抽屉**：从右侧滑出，显示该次运行的完整 stdout/stderr，Esc 或点遮罩关闭。
+  - **展开行编辑**：点名称或 ▾ 展开，可改名称、cron / 固定间隔、超时、命令；
+    启停开关、立即运行、删除（二次确认）也在这里。
 
 界面文案走 Client locale（`client.js` 里的 zh/en 字典，`ctx.locale.register`）；
 `locale/*.json` 是包级元数据（插件清单里的标题/描述），两处都提供中文与英文。
@@ -126,8 +135,13 @@ plugin_manager({ action: "install_bundle", target: "<cloned directory>" })
 
 | 调用方 | 入口 |
 |---|---|
-| App 界面 | `POST /api/noagent.rpc`，body `{ op: "status" \| "run" \| "log", id?, wait?, limitBytes? }` |
-| agent 工具 | `noagent_status` / `noagent_run` / `noagent_log` |
+| App 界面 | `POST /api/noagent.rpc`，body `{ op: "status" \| "run" \| "log" \| "toggle" \| "update" \| "delete", id?, wait?, limitBytes?, at? }` |
+| agent 工具 | `noagent_status` / `noagent_run` / `noagent_log` / `noagent_update` |
+
+界面上的写操作（启停、改计划、删除）都走同一份 `operations.updateJob/deleteJob`：
+只覆盖被点的字段，`jobs.json` 里插件不认识的字段（`env`、`wakeOnChange`、自定义键）
+原样保留；写前留一份 `jobs.json.bak-<时间戳>-<动作>`（保留最近 10 份）；
+写后用同一个 `normalizeJobs` 复核，加载不了就拒绝落盘。
 
 Web 入口用 `ctx.connection.fetch.register` 注册精确 Fetch 路由：Connection 的 `/api`
 前缀处理器先做 Host/Origin 围栏与签名 Cookie 鉴权（未鉴权 401、跨站 403），再把请求交给

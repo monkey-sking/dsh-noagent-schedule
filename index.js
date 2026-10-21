@@ -144,6 +144,7 @@ export function zonedParts(date, timeZone) {
     hour: '2-digit',
     day: '2-digit',
     month: '2-digit',
+    year: 'numeric',
     weekday: 'short',
   })
   const parts = {}
@@ -154,6 +155,7 @@ export function zonedParts(date, timeZone) {
     hour: Number(parts.hour) % 24,
     day: Number(parts.day),
     month: Number(parts.month),
+    year: Number(parts.year),
     weekday,
   }
 }
@@ -170,6 +172,86 @@ export function cronMatches(spec, parts) {
 
 function minuteKey(parts) {
   return `${parts.month}-${parts.day}-${parts.hour}-${parts.minute}`
+}
+
+/** 下次运行最多往后找多久：要覆盖「每年 2 月 29 日」这类最长 4 年才出现一次的计划。 */
+const NEXT_RUN_HORIZON_DAYS = 366 * 4 + 1
+
+/** cron 解析结果缓存：status 每次轮询都会为每个任务算一次，别重复解析。 */
+const CRON_SPEC_CACHE = new Map()
+
+const cronSpecOf = (expression) => {
+  const key = String(expression)
+  if (CRON_SPEC_CACHE.has(key)) return CRON_SPEC_CACHE.get(key)
+  let spec = null
+  try {
+    spec = parseCron(key)
+  } catch {
+    spec = null
+  }
+  if (CRON_SPEC_CACHE.size > 500) CRON_SPEC_CACHE.clear()
+  CRON_SPEC_CACHE.set(key, spec)
+  return spec
+}
+
+/**
+ * 从现在起下一个命中 cron 的分钟（毫秒时间戳），找不到返回 null。
+ *
+ * 先按天筛（日期/月/周几），命中那一天再在候选小时里逐个试，避免最坏情况
+ * （例如每年 2 月 29 日）要逐分钟走四年。只服务于 UI 的「下次运行」，
+ * 不参与调度；非法 cron 返回 null 让 UI 显示「计划无效」。
+ */
+export function nextRunAt(expression, fromMs = Date.now(), timeZone = 'Asia/Shanghai') {
+  const spec = cronSpecOf(expression)
+  if (!spec) return null
+  const hours = [...spec.hour].sort((a, b) => a - b)
+  const minutes = [...spec.minute].sort((a, b) => a - b)
+  const start = Math.ceil(Number(fromMs) / 60_000) * 60_000
+  let dayStart = null
+  let lastDayKey = null
+  for (let day = 0; day < NEXT_RUN_HORIZON_DAYS; day += 1) {
+    const probe = new Date(start + day * 86_400_000)
+    let parts
+    try {
+      parts = zonedParts(probe, timeZone)
+    } catch {
+      return null
+    }
+    const dayKey = `${parts.month}-${parts.day}`
+    if (!spec.month.has(parts.month) || dayKey === lastDayKey) continue
+    const domHit = spec.dom.has(parts.day)
+    const dowHit = spec.dow.has(parts.weekday)
+    if (!(spec.dayOr ? domHit || dowHit : domHit && dowHit)) continue
+    lastDayKey = dayKey
+    // 用「当天本地 00:00」作为锚点：按天推进可能跨夏令时，所以要重新对齐。
+    dayStart = Date.UTC(probe.getUTCFullYear(), probe.getUTCMonth(), probe.getUTCDate())
+    for (const hour of hours) {
+      for (const minute of minutes) {
+        const at = localTimeToMs(parts.year, parts.month, parts.day, hour, minute, timeZone)
+        if (at !== null && at >= start) return at
+      }
+    }
+    // 当天没有晚于 now 的点，继续下一天（dayStart 只用于调试，不参与逻辑）。
+    void dayStart
+  }
+  return null
+}
+
+/**
+ * 把「某时区的墙上时间」换成毫秒时间戳。
+ *
+ * 先按 UTC 猜一个时刻，再用该时区回读墙上时间，用差值修正一次即可覆盖时区偏移；
+ * 夏令时跳变处对不上就返回 null（该分钟在本地不存在）。
+ */
+function localTimeToMs(year, month, day, hour, minute, timeZone) {
+  const guess = Date.UTC(year, month - 1, day, hour, minute)
+  const back = zonedParts(new Date(guess), timeZone)
+  const offset =
+    Date.UTC(back.year, back.month - 1, back.day, back.hour, back.minute) - guess
+  const at = guess - offset
+  const check = zonedParts(new Date(at), timeZone)
+  if (check.hour !== hour || check.minute !== minute || check.day !== day) return null
+  return at
 }
 
 async function readJson(file) {
@@ -285,9 +367,16 @@ export function publicJob(job, stateEntry, lastRecord, running) {
       ? { kind: 'cron', cron: job.cron }
       : { kind: 'every', everySeconds: job.everySeconds },
     command: describeCommand(job),
+    cwd: job.cwd,
     timeoutSeconds: job.timeoutSeconds,
+    // 事件型探针：脚本跑完只在输出变化时唤醒会话。UI 需要它来区分两类任务。
+    watch: Boolean(job.wakeOnChange),
+    wakeSessionId: job.wakeOnChange?.sessionId ?? null,
+    wakeTitle: job.wakeOnChange?.title ?? null,
     running: running === true,
     lastFiredMinute: stateEntry?.lastFiredMinute ?? null,
+    lastWakeAt: stateEntry?.lastWakeAt ?? null,
+    nextRunAt: null,
     last,
   }
 }
@@ -420,20 +509,58 @@ export async function readJobStatus({ jobsFile, stateDir, runningIds }) {
   const state = (await readJson(path.join(stateDir, 'state.json'))) ?? { jobs: {} }
   const runs = await readRunsTail(path.join(stateDir, 'runs.jsonl'))
   const lastById = new Map()
+  // 每个任务再留最近 8 条：界面上要画「最近结果」小格子（青龙式），
+  // 但不能把整份 runs.jsonl 交给浏览器。
+  const recentById = new Map()
   for (const record of runs) {
-    if (record && typeof record.id === 'string') lastById.set(record.id, record)
+    if (!record || typeof record.id !== 'string') continue
+    lastById.set(record.id, record)
+    const list = recentById.get(record.id) ?? []
+    list.push({
+      startedAt: record.startedAt ?? null,
+      durationMs: record.durationMs ?? null,
+      exitCode: record.exitCode ?? null,
+      ok: record.ok === true,
+      timedOut: record.timedOut === true,
+    })
+    if (list.length > 8) list.shift()
+    recentById.set(record.id, list)
   }
   const running = runningIds instanceof Set ? runningIds : new Set(runningIds ?? [])
+  const now = Date.now()
+  const publicJobs = jobs.map((job) => {
+    const row = publicJob(job, state.jobs?.[job.id], lastById.get(job.id), running.has(job.id))
+    row.recent = recentById.get(job.id) ?? []
+    if (job.enabled === false) return row
+    if (job.cron) {
+      row.nextRunAt = nextRunAt(job.cron, now, job.timeZone || 'Asia/Shanghai')
+    } else if (job.everySeconds) {
+      const anchor = state.jobs?.[job.id]?.lastStartedAt
+        ? Date.parse(state.jobs[job.id].lastStartedAt)
+        : NaN
+      const base = Number.isFinite(anchor) ? anchor : now
+      const due = base + job.everySeconds * 1000
+      row.nextRunAt = due > now ? due : now
+    }
+    return row
+  })
   return {
     updatedAt: state.updatedAt ?? null,
-    jobs: jobs.map((job) =>
-      publicJob(job, state.jobs?.[job.id], lastById.get(job.id), running.has(job.id)),
-    ),
+    now,
+    jobsFile,
+    stateDir,
+    jobs: publicJobs,
   }
 }
 
-/** 读某个任务最近一次运行的日志（默认取时间戳最大的那份，只回尾部）。 */
-export async function readRunLog({ stateDir, id, limitBytes = MAX_LOG_BYTES }) {
+/**
+ * 读某个任务某次运行的日志（默认取时间戳最大的那份，只回尾部）。
+ *
+ * `at` 是 runs.jsonl 里那条记录的 startedAt（界面上点「最近结果」的历史格子时传入）；
+ * 日志文件名是把 startedAt 里的 `:` 和 `.` 换成 `-`，所以这里只做同样的替换后按
+ * 文件名精确查找，找不到再退回最新一份，避免把别人的日志读回来。
+ */
+export async function readRunLog({ stateDir, id, limitBytes = MAX_LOG_BYTES, at }) {
   const safe = assertJobId(id)
   const dir = path.join(stateDir, 'runs', safe)
   let names
@@ -446,7 +573,11 @@ export async function readRunLog({ stateDir, id, limitBytes = MAX_LOG_BYTES }) {
     throw error
   }
   const logs = names.filter((name) => name.endsWith('.log')).sort()
-  const file = logs[logs.length - 1]
+  let file = logs[logs.length - 1]
+  if (typeof at === 'string' && at) {
+    const wanted = `${at.replace(/[:.]/g, '-')}.log`
+    if (logs.includes(wanted)) file = wanted
+  }
   if (!file) return { id: safe, file: null, size: 0, truncated: false, text: '' }
   const handle = await fs.open(path.join(dir, file), 'r')
   try {
@@ -894,7 +1025,7 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  /** 唯一的操作实现：UI 路由与 agent 工具都调这三个方法。 */
+  /** 唯一的操作实现：UI 路由与 agent 工具都调这些方法。 */
   const operations = {
     status: () => readJobStatus({ jobsFile, stateDir, runningIds: running }),
     /**
@@ -918,7 +1049,148 @@ export function apply(ctx, config = {}) {
       return { id: safe, record }
     },
     log: (id, options = {}) =>
-      readRunLog({ stateDir, id, limitBytes: options.limitBytes ?? MAX_LOG_BYTES }),
+      readRunLog({
+        stateDir,
+        id,
+        limitBytes: options.limitBytes ?? MAX_LOG_BYTES,
+        at: options.at,
+      }),
+    /**
+     * 改一个任务的启停 / 计划 / 超时 / 名称 / 命令。
+     *
+     * 只改 patch 里出现的字段：jobs.json 是用户手写的文件，可能带 env、wakeOnChange、
+     * 注释式字段等本插件不认识的东西，写回时整条原样保留，只覆盖被点的字段。
+     * 写前存一份带时间戳的备份（保留最近 10 份），写后用同一个 normalizeJobs 复核，
+     * 校验不过就拒绝落盘 —— 界面不可能把 jobs.json 改成加载失败的状态。
+     */
+    async updateJob(id, patch = {}) {
+      const safe = assertJobId(id)
+      if (!patch || typeof patch !== 'object') throw operationError('invalid_patch', '修改内容必须是对象')
+      const document = await readRawJobs()
+      const raw = Array.isArray(document) ? document : document?.jobs
+      if (!Array.isArray(raw)) throw operationError('jobs_invalid', '任务清单格式错误：需要 { "jobs": [...] }')
+      const index = raw.findIndex((job) => job && String(job.id) === safe)
+      if (index < 0) throw operationError('job_not_found', `未找到任务：${safe}`)
+      const nextJob = { ...raw[index] }
+      if (typeof patch.enabled === 'boolean') nextJob.enabled = patch.enabled
+      if (typeof patch.name === 'string' && patch.name.trim()) nextJob.name = patch.name.trim()
+      if (typeof patch.command === 'string' && patch.command.trim()) {
+        nextJob.command = patch.command.trim()
+        delete nextJob.argv
+      }
+      if (patch.timeoutSeconds !== undefined) {
+        const timeout = Number(patch.timeoutSeconds)
+        if (!Number.isFinite(timeout) || timeout < 10 || timeout > 86_400) {
+          throw operationError('invalid_timeout', '超时必须是 10–86400 秒之间的数')
+        }
+        nextJob.timeoutSeconds = Math.floor(timeout)
+      }
+      if (patch.cron !== undefined || patch.everySeconds !== undefined) {
+        const mode = patch.mode === 'every' ? 'every' : 'cron'
+        if (mode === 'every') {
+          const every = Number(patch.everySeconds)
+          if (!Number.isInteger(every) || every < 30) {
+            throw operationError('invalid_every', '间隔必须是 ≥30 的整数秒')
+          }
+          delete nextJob.cron
+          nextJob.everySeconds = every
+        } else {
+          const cron = String(patch.cron ?? '').trim()
+          try {
+            parseCron(cron)
+          } catch (error) {
+            throw operationError('invalid_cron', `cron 不合法：${messageOf(error)}`)
+          }
+          delete nextJob.everySeconds
+          nextJob.cron = cron
+        }
+      }
+      if (typeof patch.timeZone === 'string' && patch.timeZone.trim()) {
+        const zone = patch.timeZone.trim()
+        try {
+          new Intl.DateTimeFormat('en-US', { timeZone: zone })
+        } catch {
+          throw operationError('invalid_timezone', `时区不合法：${zone}`)
+        }
+        nextJob.timeZone = zone
+      }
+      const nextRaw = raw.slice()
+      nextRaw[index] = nextJob
+      const nextDocument = Array.isArray(document) ? nextRaw : { ...document, jobs: nextRaw }
+      // 用调度器自己的解析器复核：加载不了的清单绝不落盘。
+      try {
+        normalizeJobs(nextDocument)
+      } catch (error) {
+        throw operationError('jobs_invalid', `改完的任务无法加载：${messageOf(error)}`)
+      }
+      await backupJobsFile('update')
+      await writeJsonAtomic(jobsFile, nextDocument)
+      // 立刻让 tick 用新清单，不必等 10 秒重读。
+      jobsLoadedAt = 0
+      return { updated: true, id: safe }
+    },
+    async deleteJob(id) {
+      const safe = assertJobId(id)
+      if (running.has(safe)) throw operationError('job_running', `任务 ${safe} 正在运行，先停下再删`)
+      const document = await readRawJobs()
+      const raw = Array.isArray(document) ? document : document?.jobs
+      if (!Array.isArray(raw)) throw operationError('jobs_invalid', '任务清单格式错误：需要 { "jobs": [...] }')
+      const index = raw.findIndex((job) => job && String(job.id) === safe)
+      if (index < 0) throw operationError('job_not_found', `未找到任务：${safe}`)
+      const nextRaw = raw.filter((_, i) => i !== index)
+      const nextDocument = Array.isArray(document) ? nextRaw : { ...document, jobs: nextRaw }
+      await backupJobsFile('delete')
+      await writeJsonAtomic(jobsFile, nextDocument)
+      jobsLoadedAt = 0
+      return { deleted: true, id: safe }
+    },
+  }
+
+  /** 读 jobs.json 原文（未归一化），写回时才能原样保留未知字段。 */
+  const readRawJobs = async () => {
+    let document
+    try {
+      document = await readJson(jobsFile)
+    } catch (error) {
+      throw operationError('jobs_unreadable', `任务清单读取失败：${messageOf(error)}`)
+    }
+    if (!document) throw operationError('jobs_missing', `未找到任务清单：${jobsFile}`)
+    return document
+  }
+
+  /**
+   * 写 jobs.json 前留一份备份：jobs.json.bak-<时间戳>-<动作>，只保留最近 10 份。
+   * 备份失败就放弃这次写入 —— 改坏了没有退路比不改更糟。
+   */
+  const backupJobsFile = async (reason) => {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const dir = path.dirname(jobsFile)
+    // 同一毫秒内连续两次写会撞名，撞上就加序号，保证每次写前都真的留了一份。
+    let target = path.join(dir, `jobs.json.bak-${stamp}-${reason}`)
+    for (let n = 2; ; n += 1) {
+      try {
+        await fs.access(target)
+      } catch {
+        break
+      }
+      target = path.join(dir, `jobs.json.bak-${stamp}-${reason}-${n}`)
+    }
+    try {
+      await fs.copyFile(jobsFile, target)
+    } catch (error) {
+      if (error && error.code !== 'ENOENT') {
+        throw operationError('backup_failed', `备份任务清单失败，已放弃修改：${messageOf(error)}`)
+      }
+      return
+    }
+    try {
+      const names = (await fs.readdir(dir)).filter((name) => name.startsWith('jobs.json.bak-')).sort()
+      for (const stale of names.slice(0, Math.max(0, names.length - 10))) {
+        await fs.rm(path.join(dir, stale), { force: true }).catch(() => {})
+      }
+    } catch {
+      /* 清理旧备份失败不影响本次写入 */
+    }
   }
 
   const jsonResponse = (payload, status = 200) =>
@@ -955,7 +1227,20 @@ export function apply(ctx, config = {}) {
       if (payload.op === 'log') {
         const value = await operations.log(payload.id, {
           limitBytes: Number.isFinite(payload.limitBytes) ? payload.limitBytes : undefined,
+          at: typeof payload.at === 'string' ? payload.at : undefined,
         })
+        return jsonResponse({ ok: true, value })
+      }
+      if (payload.op === 'toggle') {
+        const value = await operations.updateJob(payload.id, { enabled: payload.enabled === true })
+        return jsonResponse({ ok: true, value })
+      }
+      if (payload.op === 'update') {
+        const value = await operations.updateJob(payload.id, payload.patch ?? {})
+        return jsonResponse({ ok: true, value })
+      }
+      if (payload.op === 'delete') {
+        const value = await operations.deleteJob(payload.id)
         return jsonResponse({ ok: true, value })
       }
       return jsonResponse(
@@ -1065,6 +1350,43 @@ export function apply(ctx, config = {}) {
         return operations.log(args.id, {
           limitBytes: Number.isFinite(args.limitBytes) ? args.limitBytes : undefined,
         })
+      },
+    })
+    tools.register({
+      name: 'noagent_update',
+      description:
+        'Change one no-agent job in jobs.json: enable/disable it, set its cron or everySeconds schedule, timeout, name or command. Omitted fields are left untouched (env, wakeOnChange and unknown fields are preserved) and a timestamped backup is written first.',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Exact job id from noagent_status.' },
+          enabled: { type: 'boolean', description: 'Enable or disable the job.' },
+          cron: { type: 'string', description: 'Five-field cron expression (sets schedule mode to cron).' },
+          everySeconds: {
+            type: 'integer',
+            minimum: 30,
+            description: 'Interval in seconds (sets schedule mode to interval).',
+          },
+          timeZone: { type: 'string', description: 'IANA time zone, e.g. Asia/Shanghai.' },
+          timeoutSeconds: { type: 'integer', minimum: 10, description: 'Run timeout in seconds.' },
+          name: { type: 'string', description: 'Display name.' },
+          command: { type: 'string', description: 'Shell command to run.' },
+        },
+        required: ['id'],
+        additionalProperties: false,
+      },
+      output: toolOutput,
+      async execute(args) {
+        if (!args || typeof args.id !== 'string') {
+          throw operationError('invalid_job_id', '必须提供任务 id')
+        }
+        const patch = {}
+        for (const key of ['enabled', 'cron', 'everySeconds', 'timeZone', 'timeoutSeconds', 'name', 'command']) {
+          if (args[key] !== undefined) patch[key] = args[key]
+        }
+        if (typeof args.cron === 'string') patch.mode = 'cron'
+        if (args.everySeconds !== undefined) patch.mode = 'every'
+        return operations.updateJob(args.id, patch)
       },
     })
   }

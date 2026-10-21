@@ -171,10 +171,10 @@ test('apply：UI 路由与 agent 工具共用同一份操作实现', async () =>
   const { ctx, tools, routes } = createCtx({ calls })
   apply(ctx, { jobsFile, stateDir: dir, tickSeconds: 1 })
 
-  // 1) 注册面：三个工具 + 一条精确 fetch 路由
+  // 1) 注册面：四个工具 + 一条精确 fetch 路由
   assert.deepEqual(
     tools.map((tool) => tool.name).sort(),
-    ['noagent_log', 'noagent_run', 'noagent_status'],
+    ['noagent_log', 'noagent_run', 'noagent_status', 'noagent_update'],
   )
   assert.equal(routes.length, 1)
   assert.equal(routes[0].path, RPC_PATH)
@@ -254,4 +254,238 @@ test('apply：UI 路由与 agent 工具共用同一份操作实现', async () =>
   assert.equal(state.jobs.unit.lastExitCode, 0)
   const runs = (await fs.readFile(path.join(dir, 'runs.jsonl'), 'utf8')).trim().split('\n')
   assert.equal(runs.length, 2)
+})
+
+// ---------------------------------------------------------------------------
+// 0.4.0：界面上的写操作（启停 / 改计划 / 删除）必须安全 —— 保留未知字段、
+// 先备份、非法值拒绝落盘。
+// ---------------------------------------------------------------------------
+
+/** 一份带「本插件不认识」的字段的 jobs.json：写回时这些字段必须原样保留。 */
+function richJobs() {
+  return {
+    version: 3,
+    note: '手写的清单',
+    jobs: [
+      {
+        id: 'unit',
+        name: '单元测试任务',
+        cron: '30 18 * * *',
+        command: 'echo ok',
+        timeZone: 'Asia/Shanghai',
+        timeoutSeconds: 180,
+        env: { FEISHU_CHAT_ID: 'oc_x', TELEGRAM_CHAT_ID: '1' },
+        cwd: '/tmp',
+        customField: { nested: true },
+      },
+      {
+        id: 'watch',
+        name: '探针任务',
+        everySeconds: 120,
+        command: 'bash probe.sh',
+        wakeOnChange: { sessionId: 'session-abc', title: '有新消息', onlyOnNew: true },
+      },
+    ],
+  }
+}
+
+async function setupRich() {
+  const dir = await tempDir()
+  const jobsFile = path.join(dir, 'jobs.json')
+  await fs.writeFile(jobsFile, JSON.stringify(richJobs()))
+  const { ctx, routes } = createCtx({})
+  apply(ctx, { jobsFile, stateDir: dir, tickSeconds: 1 })
+  return { dir, jobsFile, route: routes[0] }
+}
+
+test('RPC update：只改传入字段，未知字段与 wakeOnChange 原样保留', async () => {
+  const { jobsFile, route } = await setupRich()
+
+  const response = await postRpc(route, {
+    op: 'update',
+    id: 'unit',
+    patch: { cron: '0 7 * * 1-5', timeoutSeconds: 600, name: '改过名的任务' },
+  })
+  const body = await response.json()
+  assert.equal(body.ok, true, JSON.stringify(body))
+  assert.equal(body.value.updated, true)
+
+  const saved = JSON.parse(await fs.readFile(jobsFile, 'utf8'))
+  assert.equal(saved.version, 3, '顶层未知字段必须保留')
+  assert.equal(saved.note, '手写的清单')
+  const unit = saved.jobs.find((job) => job.id === 'unit')
+  assert.equal(unit.cron, '0 7 * * 1-5')
+  assert.equal(unit.timeoutSeconds, 600)
+  assert.equal(unit.name, '改过名的任务')
+  // 没点到的字段一个都不能丢
+  assert.deepEqual(unit.env, { FEISHU_CHAT_ID: 'oc_x', TELEGRAM_CHAT_ID: '1' })
+  assert.equal(unit.cwd, '/tmp')
+  assert.deepEqual(unit.customField, { nested: true })
+  assert.equal(unit.command, 'echo ok')
+
+  const watch = saved.jobs.find((job) => job.id === 'watch')
+  assert.equal(watch.wakeOnChange.sessionId, 'session-abc', '另一个任务的 wakeOnChange 不能被碰')
+})
+
+test('RPC update：cron / 间隔模式互斥，切换时删掉另一种字段', async () => {
+  const { jobsFile, route } = await setupRich()
+
+  const toEvery = await (await postRpc(route, {
+    op: 'update',
+    id: 'unit',
+    patch: { mode: 'every', everySeconds: 300 },
+  })).json()
+  assert.equal(toEvery.ok, true, JSON.stringify(toEvery))
+  let saved = JSON.parse(await fs.readFile(jobsFile, 'utf8'))
+  let unit = saved.jobs.find((job) => job.id === 'unit')
+  assert.equal(unit.everySeconds, 300)
+  assert.equal(unit.cron, undefined, '切到间隔后 cron 必须删除')
+
+  const backToCron = await (await postRpc(route, {
+    op: 'update',
+    id: 'unit',
+    patch: { mode: 'cron', cron: '5 6 * * *' },
+  })).json()
+  assert.equal(backToCron.ok, true, JSON.stringify(backToCron))
+  saved = JSON.parse(await fs.readFile(jobsFile, 'utf8'))
+  unit = saved.jobs.find((job) => job.id === 'unit')
+  assert.equal(unit.cron, '5 6 * * *')
+  assert.equal(unit.everySeconds, undefined, '切回 cron 后 everySeconds 必须删除')
+})
+
+test('RPC update：非法 cron / 间隔 / 超时 / 时区一律拒绝且不落盘', async () => {
+  const { jobsFile, route } = await setupRich()
+  const before = await fs.readFile(jobsFile, 'utf8')
+
+  const cases = [
+    { op: 'update', id: 'unit', patch: { mode: 'cron', cron: '61 99 * * *' } },
+    { op: 'update', id: 'unit', patch: { mode: 'cron', cron: '' } },
+    { op: 'update', id: 'unit', patch: { mode: 'every', everySeconds: 5 } },
+    { op: 'update', id: 'unit', patch: { timeoutSeconds: 1 } },
+    { op: 'update', id: 'unit', patch: { timeZone: 'Mars/Olympus' } },
+  ]
+  for (const payload of cases) {
+    const body = await (await postRpc(route, payload)).json()
+    assert.equal(body.ok, false, `应当拒绝：${JSON.stringify(payload)}`)
+    assert.ok(body.error.code, '被拒绝时必须给出错误码')
+  }
+  assert.equal(await fs.readFile(jobsFile, 'utf8'), before, '被拒绝的修改不能写进文件')
+})
+
+test('RPC update：写回前留备份，且备份数量有上限', async () => {
+  const { dir, jobsFile, route } = await setupRich()
+
+  for (let i = 0; i < 13; i += 1) {
+    const body = await (await postRpc(route, { op: 'update', id: 'unit', patch: { timeoutSeconds: 100 + i } })).json()
+    assert.equal(body.ok, true, JSON.stringify(body))
+  }
+
+  const backups = (await fs.readdir(dir)).filter((name) => name.startsWith('jobs.json.bak-'))
+  assert.equal(backups.length, 10, `备份应只保留 10 份，实际 ${backups.length}`)
+  // 备份是「改之前」的内容：13 次写入只留最后 10 份，即改动前的 102–111 秒
+  const contents = await Promise.all(backups.sort().map((name) => fs.readFile(path.join(dir, name), 'utf8')))
+  const values = contents
+    .flatMap((text) => JSON.parse(text).jobs)
+    .filter((job) => job.id === 'unit')
+    .map((job) => job.timeoutSeconds)
+  assert.ok(values.includes(102), `备份里应能找回历史值，实际 ${values.join(',')}`)
+  assert.ok(values.length >= 10, '每份备份都该是完整清单')
+})
+
+test('RPC toggle：只改 enabled，返回后 status 反映新状态', async () => {
+  const { route } = await setupRich()
+
+  const off = await (await postRpc(route, { op: 'toggle', id: 'unit', enabled: false })).json()
+  assert.equal(off.ok, true, JSON.stringify(off))
+  let status = await (await postRpc(route, { op: 'status' })).json()
+  assert.equal(status.value.jobs.find((job) => job.id === 'unit').enabled, false)
+  // 停用的任务没有下次运行时间
+  assert.equal(status.value.jobs.find((job) => job.id === 'unit').nextRunAt, null)
+
+  const on = await (await postRpc(route, { op: 'toggle', id: 'unit', enabled: true })).json()
+  assert.equal(on.ok, true)
+  status = await (await postRpc(route, { op: 'status' })).json()
+  const unit = status.value.jobs.find((job) => job.id === 'unit')
+  assert.equal(unit.enabled, true)
+  assert.ok(Number.isFinite(unit.nextRunAt), '启用后应算出下次运行时间')
+})
+
+test('RPC delete：删除任务并保留其它任务，未知顶层字段不丢', async () => {
+  const { jobsFile, route } = await setupRich()
+
+  const body = await (await postRpc(route, { op: 'delete', id: 'watch' })).json()
+  assert.equal(body.ok, true, JSON.stringify(body))
+
+  const saved = JSON.parse(await fs.readFile(jobsFile, 'utf8'))
+  assert.equal(saved.version, 3)
+  assert.equal(saved.note, '手写的清单')
+  assert.deepEqual(saved.jobs.map((job) => job.id), ['unit'])
+
+  const missing = await (await postRpc(route, { op: 'delete', id: 'watch' })).json()
+  assert.equal(missing.ok, false)
+  assert.equal(missing.error.code, 'job_not_found')
+})
+
+test('RPC status：带 nextRunAt / recent / jobsFile / now', async () => {
+  const { route } = await setupRich()
+  const body = await (await postRpc(route, { op: 'status' })).json()
+  assert.equal(body.ok, true)
+
+  const value = body.value
+  assert.ok(Number.isFinite(value.now))
+  assert.ok(typeof value.jobsFile === 'string' && value.jobsFile.endsWith('jobs.json'))
+  const unit = value.jobs.find((job) => job.id === 'unit')
+  assert.equal(unit.schedule.kind, 'cron')
+  assert.ok(Number.isFinite(unit.nextRunAt))
+  // 18:30 每天一次，下次不会超过 24 小时
+  assert.ok(unit.nextRunAt - value.now <= 86_400_000)
+  assert.ok(Array.isArray(unit.recent))
+  const watch = value.jobs.find((job) => job.id === 'watch')
+  assert.equal(watch.watch, true)
+  assert.equal(watch.wakeSessionId, 'session-abc')
+})
+
+test('RPC log：按 at 精确取某一次运行的日志', async () => {
+  const { dir, route } = await setupRich()
+  const logDir = path.join(dir, 'runs', 'unit')
+  await fs.mkdir(logDir, { recursive: true })
+  const first = '2026-10-20T10-00-00-000Z'
+  const second = '2026-10-21T10-00-00-000Z'
+  await fs.writeFile(path.join(logDir, `${first}.log`), 'first run\n')
+  await fs.writeFile(path.join(logDir, `${second}.log`), 'second run\n')
+
+  const latest = await (await postRpc(route, { op: 'log', id: 'unit' })).json()
+  assert.equal(latest.value.text, 'second run\n')
+
+  const older = await (await postRpc(route, {
+    op: 'log',
+    id: 'unit',
+    at: '2026-10-20T10:00:00.000Z',
+  })).json()
+  assert.equal(older.value.text, 'first run\n')
+  assert.equal(older.value.file, `${first}.log`)
+})
+
+test('noagent_update 工具：与 UI 走同一份实现', async () => {
+  const dir = await tempDir()
+  const jobsFile = path.join(dir, 'jobs.json')
+  await fs.writeFile(jobsFile, JSON.stringify(richJobs()))
+  const { ctx, tools } = createCtx({})
+  apply(ctx, { jobsFile, stateDir: dir, tickSeconds: 1 })
+
+  const update = tools.find((tool) => tool.name === 'noagent_update')
+  assert.ok(update, '缺少 noagent_update 工具')
+  await update.execute({ id: 'unit', cron: '0 3 * * *' }, {})
+
+  const saved = JSON.parse(await fs.readFile(jobsFile, 'utf8'))
+  const unit = saved.jobs.find((job) => job.id === 'unit')
+  assert.equal(unit.cron, '0 3 * * *')
+  assert.deepEqual(unit.env, { FEISHU_CHAT_ID: 'oc_x', TELEGRAM_CHAT_ID: '1' })
+
+  // everySeconds 代表切到间隔模式
+  await update.execute({ id: 'unit', everySeconds: 600 }, {})
+  const again = JSON.parse(await fs.readFile(jobsFile, 'utf8'))
+  const changed = again.jobs.find((job) => job.id === 'unit')
+  assert.equal(changed.everySeconds, 600)
+  assert.equal(changed.cron, undefined)
 })
