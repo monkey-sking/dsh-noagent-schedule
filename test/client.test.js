@@ -418,6 +418,12 @@ test('client.js：总览统计与筛选', async () => {
 
   assert.equal(u.shortenCommand('abc'), 'abc')
   assert.equal(u.shortenCommand('a'.repeat(200), 10).length, 11)
+  // 长路径只留文件名，venv 解释器只留 python —— 表格里要看得清跑的是哪个脚本
+  assert.equal(
+    u.shortenCommand('/Users/runking/.local/share/dsh-runtime/venv/bin/python /Users/runking/.local/share/dsh-runtime/scripts/02_deliver_wrapper.py --target telegram'),
+    'python 02_deliver_wrapper.py --target telegram',
+  )
+  assert.equal(u.shortenCommand('bash /Users/runking/.local/share/dsh-runtime/scripts/x.sh 2>/dev/null'), 'bash x.sh 2>/dev/null')
 })
 
 test('client.js：表单校验（cron / 间隔 / 超时 / 命令）', async () => {

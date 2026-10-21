@@ -438,9 +438,20 @@ window.__ModuleLoader__.load({
       })
     }
 
-    /** 命令太长会撑爆表格：截断到能看清「跑的是什么」的长度。 */
+    /**
+     * 命令摘要：表格里要能一眼看出「跑的是哪个脚本」。
+     * 做法是抹掉每次都一样的噪声 —— 家目录前缀、venv 里的 python 绝对路径、
+     * 过长的中间目录（只留文件名），再按长度截断。完整命令在悬停时给出。
+     */
     function shortenCommand(command, max = 96) {
-      const text = String(command ?? '').trim()
+      let text = String(command ?? '').trim()
+      // venv 里的解释器只留 python
+      text = text.replace(/\/Users\/[^/\s]+\/\.local\/share\/dsh-runtime\/venv\/bin\/(python[0-9.]*)/g, '$1')
+      // 其余绝对路径：短路径缩成 ~/…，长路径只留最后一段文件名
+      text = text.replace(/(^|\s)(\/[^\s]*)/g, (whole, lead, abs) => {
+        const base = abs.split('/').filter(Boolean).pop() || abs
+        return `${lead}${abs.length > 28 ? base : abs}`
+      })
       if (text.length <= max) return text
       return `${text.slice(0, max)}…`
     }
@@ -555,8 +566,8 @@ window.__ModuleLoader__.load({
     // -------------------------------------------------------------------------
     const CSS = `
       .noagent-root { display: flex; flex-direction: column; gap: 14px; color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; }
-      .noagent-page { padding: 24px; height: 100%; box-sizing: border-box; overflow: auto; }
-      .noagent-section { max-width: 1080px; }
+      .noagent-page { padding: 24px; height: 100%; width: 100%; box-sizing: border-box; overflow: auto; }
+      .noagent-section { width: 100%; min-width: 0; }
       .noagent-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
       .noagent-title { margin: 0; font-size: 18px; font-weight: 600; line-height: 26px; }
       .noagent-intro { margin: 4px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; }
@@ -581,17 +592,16 @@ window.__ModuleLoader__.load({
       .noagent-seg > button[data-on="true"] { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); font-weight: 600; }
       .noagent-seg > button:hover { background: var(--dsw-alias-interactive-bg-hover); }
 
-      .noagent-table-wrap { border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-layer-1); overflow: hidden; }
-      .noagent-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      .noagent-table-wrap { border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-layer-1); overflow-x: auto; overflow-y: hidden; }
+      .noagent-table { width: 100%; min-width: 720px; border-collapse: collapse; table-layout: fixed; }
       .noagent-table th { text-align: left; font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-tertiary); padding: 8px 12px; border-bottom: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-2); white-space: nowrap; }
       .noagent-table td { padding: 10px 12px; border-bottom: 1px solid var(--dsw-alias-border-l1); vertical-align: middle; }
       .noagent-table tr:last-child td { border-bottom: 0; }
       .noagent-table tr[data-detail-row="true"] > td { background: var(--dsw-alias-bg-layer-2); }
-      .noagent-table th[data-w="dot"], .noagent-table td[data-w="dot"] { width: 36px; padding-right: 0; }
-      .noagent-table th[data-w="sched"], .noagent-table td[data-w="sched"] { width: 168px; }
+      .noagent-table th[data-w="dot"], .noagent-table td[data-w="dot"] { width: 32px; padding-left: 12px; padding-right: 0; }
+      .noagent-table th[data-w="sched"], .noagent-table td[data-w="sched"] { width: 140px; }
       .noagent-table th[data-w="time"], .noagent-table td[data-w="time"] { width: 200px; }
-      .noagent-table th[data-w="runs"], .noagent-table td[data-w="runs"] { width: 96px; }
-      .noagent-table th[data-w="actions"], .noagent-table td[data-w="actions"] { width: 236px; }
+      .noagent-table th[data-w="actions"], .noagent-table td[data-w="actions"] { width: 180px; }
 
       .noagent-task { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
       .noagent-dot { display: block; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; flex: 0 0 auto; background: var(--dsw-alias-state-idle-primary); }
@@ -599,7 +609,7 @@ window.__ModuleLoader__.load({
       .noagent-dot[data-state="error"] { background: var(--dsw-alias-state-error-primary); }
       .noagent-dot[data-state="running"] { background: var(--dsw-alias-brand-primary); }
       .noagent-task-main { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-      .noagent-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .noagent-name { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .noagent-link { font: inherit; font-weight: 600; color: inherit; background: transparent; border: 0; padding: 0; cursor: pointer; text-align: left; }
       .noagent-link:hover { text-decoration: underline; }
       .noagent-meta { color: var(--dsw-alias-label-tertiary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -613,8 +623,8 @@ window.__ModuleLoader__.load({
       .noagent-sched-sub { color: var(--dsw-alias-label-tertiary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .noagent-sched-sub[data-invalid="true"] { color: var(--dsw-alias-state-error-primary); }
 
-      .noagent-runs { display: flex; align-items: center; gap: 3px; }
-      .noagent-run { display: block; width: 8px; height: 16px; border: 0; padding: 0; border-radius: 2px; background: var(--dsw-alias-state-idle-primary); cursor: pointer; opacity: 0.45; }
+      .noagent-runs { display: inline-flex; align-items: center; gap: 2px; vertical-align: middle; }
+      .noagent-run { display: block; width: 5px; height: 12px; border: 0; padding: 0; border-radius: 1px; background: var(--dsw-alias-state-idle-primary); cursor: pointer; opacity: 0.45; }
       .noagent-run[data-ok="true"] { background: var(--dsw-alias-state-success-primary); opacity: 0.85; }
       .noagent-run[data-ok="false"] { background: var(--dsw-alias-state-error-primary); opacity: 0.95; }
       .noagent-run:hover { opacity: 1; }
@@ -780,8 +790,8 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** 上次 / 下次：两行，避免横向占满表格。 */
-    function TimingCell({ t, lang, job, now }) {
+    /** 上次 / 下次：两行；第二行右侧跟一组「最近几次」的小竖条。 */
+    function TimingCell({ t, lang, job, now, onPick }) {
       const last = job.last
       const lastText = last && last.startedAt
         ? humanTime(Date.parse(last.startedAt), lang, job.timeZone, now)
@@ -800,7 +810,13 @@ window.__ModuleLoader__.load({
         'div',
         { className: 'noagent-sched' },
         h('span', { className: 'noagent-sched-main' }, h('span', { className: 'noagent-hint', style: { marginRight: 4 } }, t('lastRun')), lastText, result),
-        h('span', { className: 'noagent-sched-sub' }, h('span', { style: { marginRight: 4 } }, t('nextRun')), nextText),
+        h(
+          'span',
+          { className: 'noagent-sched-sub', style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
+          h('span', { style: { marginRight: 4 } }, t('nextRun')),
+          h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' } }, nextText),
+          h(RunsStrip, { t, job, onPick }),
+        ),
       )
     }
 
@@ -1087,7 +1103,6 @@ window.__ModuleLoader__.load({
               h('th', null, t('colTask')),
               h('th', { 'data-w': 'sched' }, t('colSchedule')),
               h('th', { 'data-w': 'time' }, `${t('lastRun')} / ${t('nextRun')}`),
-              h('th', { 'data-w': 'runs' }, t('colRuns')),
               h('th', { 'data-w': 'actions' }, t('colActions')),
             ),
           ),
@@ -1128,8 +1143,7 @@ window.__ModuleLoader__.load({
                     ),
                   ),
                   h('td', { 'data-w': 'sched' }, h(ScheduleCell, { t, lang, job })),
-                  h('td', { 'data-w': 'time' }, h(TimingCell, { t, lang, job, now })),
-                  h('td', { 'data-w': 'runs' }, h(RunsStrip, { t, job, onPick: openLog })),
+                  h('td', { 'data-w': 'time' }, h(TimingCell, { t, lang, job, now, onPick: openLog })),
                   h(
                     'td',
                     { 'data-w': 'actions' },
@@ -1172,7 +1186,7 @@ window.__ModuleLoader__.load({
                   h(
                     'tr',
                     { key: `${job.id}-detail`, 'data-detail-row': 'true' },
-                    h('td', { colSpan: 6 }, h(JobDetail, { t, lang, job, actions: { ...actions, openLog } })),
+                    h('td', { colSpan: 5 }, h(JobDetail, { t, lang, job, actions: { ...actions, openLog } })),
                   ),
                 )
               }
