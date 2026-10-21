@@ -19,7 +19,7 @@ want it to be — see [wake on change](#wake-on-change).
 | **Logs you can read** | One file per run with argv, exit code, stdout and stderr; a `runs.jsonl` ledger beside it. |
 | **Overlap protection** | A job whose previous run is still going is skipped, not stacked. |
 | **Timeout** | Oversized jobs are terminated at `timeoutSeconds`. |
-| **Qinglong-style task page** | Overview cards, search and status filter, one row per job with a status dot, a human-readable schedule ("daily 18:30" instead of `30 18 * * *`), last and next run, a strip of the last 8 results, and a log drawer. |
+| **Qinglong-style task page** (open it from the sidebar; not duplicated in Settings) | Overview cards, search and status filter, one row per job with a status dot, a human-readable schedule ("daily 18:30" instead of `30 18 * * *`), last and next run, a strip of the last 8 results, and a log drawer. |
 | **Edit from the page** | Enable or disable a job, change its cron or interval, timeout, name or command, and delete it. Every write is validated, backed up, and re-parsed before it lands, so `jobs.json` can never be left unloadable. |
 | **Agent tools** | `noagent_status`, `noagent_run`, `noagent_log`, `noagent_update` — the same operations the UI uses. |
 | **Wake on change** | Turn a polling script into an event source: the model is woken only when its output changes. |

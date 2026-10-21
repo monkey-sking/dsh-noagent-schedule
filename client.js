@@ -33,7 +33,6 @@ window.__ModuleLoader__.load({
     // 文案：Client locale 字典（zh/en 都在这里注册；locale/*.json 是包级元数据）
     // -------------------------------------------------------------------------
     const en = {
-      nav: 'Scheduled scripts',
       panel: 'Scheduled scripts',
       title: 'Scheduled scripts',
       intro:
@@ -108,7 +107,6 @@ window.__ModuleLoader__.load({
     }
 
     const zh = {
-      nav: '定时脚本',
       panel: '定时脚本',
       title: '定时脚本',
       intro: '宿主按计划直接运行、不经过模型的脚本。可以立即运行、看日志，也可以改运行时间。',
@@ -567,7 +565,6 @@ window.__ModuleLoader__.load({
     const CSS = `
       .noagent-root { display: flex; flex-direction: column; gap: 14px; color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; }
       .noagent-page { padding: 24px; height: 100%; width: 100%; box-sizing: border-box; overflow: auto; }
-      .noagent-section { width: 100%; min-width: 0; }
       .noagent-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
       .noagent-title { margin: 0; font-size: 18px; font-weight: 600; line-height: 26px; }
       .noagent-intro { margin: 4px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; }
@@ -1359,31 +1356,6 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** 设置页的一页（settings.section 是 list 槽，一条目 = 一页）。 */
-    function SettingsSection(props) {
-      const status = props.useStatus((value) => value)
-      return h(
-        'div',
-        { className: 'noagent-root noagent-section' },
-        h(StyleTag),
-        h(
-          'div',
-          { className: 'noagent-head' },
-          h(
-            'div',
-            null,
-            h('h2', { className: 'noagent-title' }, props.t('title')),
-            h('p', { className: 'noagent-intro' }, props.t('intro')),
-          ),
-          status.updatedAt
-            ? h('span', { className: 'noagent-meta' },
-                props.t('updated', { time: humanTime(Date.parse(status.updatedAt), props.lang, 'Asia/Shanghai', Date.now()) }))
-            : null,
-        ),
-        h(JobsView, { ...props, status }),
-      )
-    }
-
     /** 侧边栏点开后占据中央面板的一页。 */
     function PanelPage(props) {
       const status = props.useStatus((value) => value)
@@ -1400,13 +1372,13 @@ window.__ModuleLoader__.load({
             h('h2', { className: 'noagent-title' }, props.t('title')),
             h('p', { className: 'noagent-intro' }, props.t('intro')),
           ),
-          h('button', {
-            type: 'button',
-            className: 'noagent-button',
-            onClick: () => {
-              void props.refresh()
-            },
-          }, props.t('refresh')),
+          h(
+            'span',
+            { className: 'noagent-meta' },
+            status.updatedAt
+              ? props.t('updated', { time: humanTime(Date.parse(status.updatedAt), props.lang, 'Asia/Shanghai', Date.now()) })
+              : '',
+          ),
         ),
         h(JobsView, { ...props, status }),
       )
@@ -1485,16 +1457,6 @@ window.__ModuleLoader__.load({
           ...actions,
           actions,
         })
-
-        // 设置页：一条 settings.section 条目 = 一页。
-        ctx.slots.inject('settings.section', () => ctx.slots.register({
-          name: 'settings.section',
-          id: PANEL_ID,
-          order: 45,
-          label: () => t('nav'),
-          locale: NS,
-          inject: face,
-        }, SettingsSection))
 
         // 侧边栏条目：只画图标；点击后的选中/切换由外壳按 id 处理。
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({

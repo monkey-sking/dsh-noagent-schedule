@@ -173,23 +173,16 @@ test('client.js：ModuleLoader 协议与依赖声明', async () => {
   assert.equal(packageJson.exports['./client'], './client.js')
 })
 
-test('client.js：注册设置页、侧边栏条目与中央面板，并注册中英文字典', async () => {
+test('client.js：只注册侧边栏条目与中央面板（不再进设置页），并注册中英文字典', async () => {
   const { exports } = await loadClientModule()
   const { ctx, registrations, dictionaries, effects } = createClientCtx()
   exports.apply(ctx)
 
   const bySlot = (slot) => registrations.filter((item) => item.options.name === slot)
-  assert.equal(bySlot('settings.section').length, 1)
+  // 设置页不再重复放一份：入口只有侧边栏 + 中央面板。
+  assert.equal(bySlot('settings.section').length, 0, '设置页里不该再出现定时脚本')
   assert.equal(bySlot('sidebar.panellist').length, 1)
   assert.equal(bySlot('main').length, 1)
-
-  const section = bySlot('settings.section')[0]
-  assert.equal(section.options.id, 'noagent-schedule')
-  assert.equal(section.options.order, 45)
-  assert.equal(typeof section.options.label, 'function')
-  assert.equal(section.options.locale, 'noagent-schedule')
-  assert.equal(typeof section.options.inject, 'function')
-  assert.equal(typeof section.component, 'function')
 
   const panel = bySlot('sidebar.panellist')[0]
   assert.equal(panel.options.id, 'noagent-schedule')
@@ -207,7 +200,8 @@ test('client.js：注册设置页、侧边栏条目与中央面板，并注册�
   assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort())
 
   // 注入面：hooks.status 会变成 props.useStatus，动作与 RPC 一一对应
-  const face = section.options.inject()
+  const face = main.options.inject()
+  assert.equal(typeof main.options.inject, 'function')
   assert.equal(typeof face.hooks.status.getSnapshot, 'function')
   for (const key of ['refresh', 'runNow', 'toggle', 'saveJob', 'deleteJob', 'loadLog']) {
     assert.equal(typeof face[key], 'function', `注入面缺少 ${key}`)
@@ -222,8 +216,8 @@ test('client.js：组件在给定 props 下可构造（不抛错）', async () =
   const { ctx, registrations } = createClientCtx()
   exports.apply(ctx)
 
-  const section = registrations.find((item) => item.options.name === 'settings.section')
-  const tree = section.component(faceFor(sampleStatus()))
+  const panelEntry = registrations.find((item) => item.options.name === 'main')
+  const tree = panelEntry.component(faceFor(sampleStatus()))
   assert.equal(typeof tree, 'object')
   assert.equal(tree.type, 'div')
 
@@ -231,7 +225,7 @@ test('client.js：组件在给定 props 下可构造（不抛错）', async () =
   const iconTree = icon.component({ size: 16, active: false })
   assert.equal(iconTree.type, 'svg')
 
-  const panel = registrations.find((item) => item.options.name === 'main')
+  const panel = panelEntry
   const page = panel.component(faceFor({ kind: 'error', jobs: [], updatedAt: null, error: 'boom' }))
   assert.equal(page.type, 'div')
 
@@ -268,7 +262,7 @@ test('client.js：任务表完整展开（状态灯 / 计划 / 上次下次 / �
   const { ctx, registrations } = createClientCtx()
   exports.apply(ctx)
 
-  const section = registrations.find((item) => item.options.name === 'settings.section')
+  const section = registrations.find((item) => item.options.name === 'main')
   const tree = expand(section.component(faceFor(sampleStatus())))
   const nodes = flatten(tree)
   const texts = strings(nodes)
@@ -309,7 +303,7 @@ test('client.js：展开一行、点日志格子都不会因注入面缺字段�
   const { ctx, registrations } = createClientCtx()
   exports.apply(ctx)
 
-  const section = registrations.find((item) => item.options.name === 'settings.section')
+  const section = registrations.find((item) => item.options.name === 'main')
   // 关键：注入面直接来自 apply()，而不是测试自己拼一个 props ——
   // 真实崩溃（Cannot read properties of undefined (reading 'loadLog')）就出在这里。
   const face = section.options.inject()
