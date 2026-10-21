@@ -154,6 +154,12 @@ Web 入口用 `ctx.connection.fetch.register` 注册精确 Fetch 路由：Connec
 - **不需要模型**：插件不 import 任何 LLM 服务；任务失败也不会叫醒 agent。
 - **不碰投递**：结果只落盘。要推到手机/飞书，由一个 agent 型任务或投递脚本读 `runs.jsonl` 转发。
 
+## 配套仓库
+
+[agent-cron-kit](https://github.com/monkey-sking/agent-cron-kit) 是这个调度器要跑的那批脚本：
+stdout→飞书/Telegram 投递桥、git 自动推送与脏仓库巡检、日志/备份清理、网络与桌面 App 看门狗，
+外加一份「哪些脚本能公开、哪些永远不能」的分级审核。上面说的「不碰投递」由它的 `lib/deliver.py` 补齐。
+
 ## 测试
 
 ```bash

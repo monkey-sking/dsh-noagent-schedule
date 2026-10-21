@@ -181,6 +181,13 @@ The UI and the tools call the same Host implementation.
   protected location can fail where a terminal would succeed, and vice versa. Read the log rather
   than assuming.
 
+## Related
+
+- [agent-cron-kit](https://github.com/monkey-sking/agent-cron-kit) — the scripts this scheduler was
+  built to run: a stdout→Feishu/Telegram delivery bridge, git autopush and dirty-repo watchdog,
+  log/backup cleanup, network and desktop-app watchdogs — with an audit of which of them are safe
+  to publish and which never are.
+
 ## Licence
 
 MIT.
