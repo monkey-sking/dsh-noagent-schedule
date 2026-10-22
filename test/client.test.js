@@ -376,6 +376,10 @@ test('client.js：计划人话解析（cron / 间隔 / 异常）', async () => {
   assert.equal(zh('15 9 1 * *'), '1 号 09:15')
   assert.equal(zh('0 9 1,15 * *'), '每月 1, 15 号 09:00')
   assert.equal(zh('15 9 1 11 *'), '每年 11 月 1 号 09:15')
+  assert.equal(zh('0 9-23 * 6 *'), '6 月每天 9–23 点 · 整点', '月份 + 时间窗要能说成人话')
+  assert.equal(zh('30 9-23 1 6 *'), '6 月 1 号 9–23 点 · 第 30 分')
+  assert.equal(zh('0 9 * 6 1'), '6 月 周一 09:00')
+  assert.equal(en('0 9-23 * 6 *'), 'every day of month 6 · on the hour · 9–23 h')
 
   assert.equal(en('30 18 * * *'), 'daily 18:30')
   assert.equal(en('*/15 * * * *'), 'every 15 min')
@@ -414,10 +418,10 @@ test('client.js：计划人话解析（cron / 间隔 / 异常）', async () => {
   assert.equal(bad.invalid, true)
   assert.equal(bad.text, 'nope')
   assert.equal(u.scheduleText({ kind: 'cron', cron: '61 0 * * *' }, 'zh').invalid, true)
-  // 合法但暂时说不成人话（如月份 + 时间窗）：保留原文，但不打「cron 无效」
-  assert.equal(zh('0 9-23 * 6 *'), null)
-  assert.deepEqual(plain(u.scheduleText({ kind: 'cron', cron: '0 9-23 * 6 *' }, 'zh')), {
-    text: '0 9-23 * 6 *',
+  // 合法但说不成人话（dom 与 dow 同时限制）：保留原文，但不打「cron 无效」
+  assert.equal(zh('0 9-23 1 * 1'), null)
+  assert.deepEqual(plain(u.scheduleText({ kind: 'cron', cron: '0 9-23 1 * 1' }, 'zh')), {
+    text: '0 9-23 1 * 1',
     invalid: false,
   })
   const ok = u.scheduleText({ kind: 'every', everySeconds: 600 }, 'zh')

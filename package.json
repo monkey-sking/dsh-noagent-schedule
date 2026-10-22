@@ -1,6 +1,6 @@
 {
   "name": "dsh-noagent-schedule",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "private": true,
   "type": "module",
   "description": "Zero-token scheduled script runner for DeepSeek Harness: runs shell commands on a cron schedule inside the Host without waking the model, with conditional wake-on-change, a Qinglong-style task table (overview cards, search/filter, human-readable schedules, next-run, recent runs, log drawer), editing from the page, and a sidebar panel.",

@@ -338,7 +338,26 @@ window.__ModuleLoader__.load({
             ? `yearly on ${month.values[0]}/${dom.values[0]} ${time}`
             : `每年 ${month.values[0]} 月 ${dom.values[0]} 号 ${time}`
         }
-        return null
+        // 月份 + 日/星期 + 时间窗的其它组合也逐段拼出来，别让合法 cron 退回「无效」。
+        const window = time ?? describeTimeWindow(hour, minute, lang)
+        if (!window) return null
+        const monthText = month.values.length === 1
+          ? (isEn ? `month ${month.values[0]}` : `${month.values[0]} 月`)
+          : (isEn ? `months ${month.values.join(', ')}` : `${month.values.join('、')} 月`)
+        if (dom && dowRaw) return null // Vixie 的「或」语义，人话容易误导
+        let dayText = null
+        if (dom) {
+          if (dom.values.length > 6) return null
+          dayText = isEn ? `day ${dom.values.join(', ')}` : `${dom.values.join('、')} 号`
+        } else if (dowRaw) {
+          const days = [...new Set(dowRaw.values.map((v) => (v === 7 ? 0 : v)))].sort((a, b) => a - b)
+          const label = days.map((v) => short[v]).join(isEn ? ', ' : '、')
+          dayText = isEn ? `on ${label}` : label
+        } else {
+          dayText = isEn ? 'every day' : '每天'
+        }
+        if (isEn) return `${dayText} of ${monthText} · ${window}`
+        return dom || dowRaw ? `${monthText} ${dayText} ${window}` : `${monthText}${dayText} ${window}`
       }
 
       let prefix = null
