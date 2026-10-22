@@ -222,13 +222,70 @@ window.__ModuleLoader__.load({
       return { values: [...values].sort((a, b) => a - b) }
     }
 
-    /** 小时×分钟 → `HH:MM`；组合太复杂就返回 null（交给 cron 原文）。 */
+    /** 小时×分钟 → `HH:MM`；组合太复杂就返回 null（交给 describeTimeWindow）。 */
     function timePart(hour, minute) {
       if (!minute || !hour) return null
       if (minute.values.length > 4 || hour.values.length > 3) return null
       return hour.values
         .map((hh) => minute.values.map((m) => `${pad2(hh)}:${pad2(m)}`).join(', '))
         .join(', ')
+    }
+
+    /** 等差序列的步长；不是等差返回 0（交给列举）。 */
+    function evenStep(values) {
+      if (!values || values.length < 2) return 1
+      const step = values[1] - values[0]
+      return values.every((v, i) => v === values[0] + i * step) ? step : 0
+    }
+
+    /**
+     * 小时×分钟的组合太多（超过 timePart 的枚举上限）时，压缩成一句人话，
+     * 而不是让 UI 误报「cron 无效」：
+     *   `*​/30 9-23 * * *` → 9–23 点 · 每 30 分钟
+     *   `5 9-22 * * *`    → 9–22 点 · 第 05 分
+     *   `* 9-23 * * *`    → 9–23 点 · 每分钟
+     * 实在描述不了返回 null。
+     */
+    function describeTimeWindow(hour, minute, lang) {
+      const isEn = lang === 'en'
+      const list = (values, unit) => (isEn ? `${values.join(', ')} ${unit}` : `${values.join('、')} ${unit}`)
+
+      let minuteText = null
+      if (!minute) {
+        minuteText = isEn ? 'every minute' : '每分钟'
+      } else {
+        const m = minute.values
+        const step = evenStep(m)
+        if (m.length === 1) {
+          minuteText = m[0] === 0
+            ? (isEn ? 'on the hour' : '整点')
+            : (isEn ? `at :${pad2(m[0])}` : `第 ${pad2(m[0])} 分`)
+        } else if (step && m[0] === 0) {
+          minuteText = isEn ? `every ${step} min` : `每 ${step} 分钟`
+        } else if (step) {
+          minuteText = isEn
+            ? `every ${step} min from :${pad2(m[0])}`
+            : `每 ${step} 分钟（从 ${pad2(m[0])} 分起）`
+        } else if (m.length <= 6) {
+          minuteText = list(m.map(pad2), isEn ? 'min' : '分')
+        }
+      }
+      if (!minuteText) return null
+
+      // 小时全天：分钟说法本身已经完整（「每 30 分钟」「00、05、20 分」）。
+      if (!hour) return minuteText
+
+      const h = hour.values
+      const step = evenStep(h)
+      const span = `${h[0]}–${h[h.length - 1]}`
+      let hourText = null
+      if (h.length === 1) hourText = isEn ? `at ${pad2(h[0])} h` : `${h[0]} 点`
+      else if (step === 1) hourText = isEn ? `${span} h` : `${span} 点`
+      else if (step) hourText = isEn ? `every ${step} h (${span})` : `每 ${step} 小时（${span} 点）`
+      else if (h.length <= 6) hourText = list(h, isEn ? 'h' : '点')
+      if (!hourText) return null
+
+      return isEn ? `${minuteText} · ${hourText}` : `${hourText} · ${minuteText}`
     }
 
     /**
@@ -286,7 +343,12 @@ window.__ModuleLoader__.load({
       }
 
       const time = timePart(hour, minute)
-      if (!time) return null
+      if (!time) {
+        // 组合太多不是「非法」：用区间/步长的说法兜底，真解析不了才退回 cron 原文。
+        const window = describeTimeWindow(hour, minute, lang)
+        if (!window) return null
+        return prefix === null ? window : `${prefix} ${window}`
+      }
       if (prefix === null) return isEn ? `daily ${time}` : `每天 ${time}`
       return `${prefix} ${time}`
     }

@@ -381,6 +381,20 @@ test('client.js：计划人话解析（cron / 间隔 / 异常）', async () => {
   assert.equal(en('*/15 * * * *'), 'every 15 min')
   assert.equal(en('0 0 * * 1'), 'on Mon 00:00')
 
+  // 区间 + 步长：组合太多也要给出人话，不能误报「cron 无效」（2026-10-22 修复）
+  assert.equal(zh('*/30 9-23 * * *'), '9–23 点 · 每 30 分钟')
+  assert.equal(zh('*/2 8-22 * * *'), '8–22 点 · 每 2 分钟')
+  assert.equal(zh('5 9-22 * * *'), '9–22 点 · 第 05 分')
+  assert.equal(zh('0 9-12 * * *'), '9–12 点 · 整点')
+  assert.equal(zh('* 9-23 * * *'), '9–23 点 · 每分钟')
+  assert.equal(zh('*/15 9-17 * * 1-5'), '周一、周二、周三、周四、周五 9–17 点 · 每 15 分钟')
+  assert.equal(zh('0,5,20 * * * 1'), '周一 00、05、20 分', '全天按小时的列举不重复「每小时」')
+  assert.equal(en('*/30 9-23 * * *'), 'every 30 min · 9–23 h')
+  assert.deepEqual(plain(u.scheduleText({ kind: 'cron', cron: '*/30 9-23 * * *' }, 'zh')), {
+    text: '9–23 点 · 每 30 分钟',
+    invalid: false,
+  })
+
   // 解析不了就返回 null，让 UI 退回 cron 原文
   assert.equal(zh('0 0 1 * 1'), null, 'dom 与 dow 同时受限应退回原文')
   assert.equal(zh('bad'), null)
