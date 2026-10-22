@@ -273,7 +273,15 @@ window.__ModuleLoader__.load({
       if (!minuteText) return null
 
       // 小时全天：分钟说法本身已经完整（「每 30 分钟」「00、05、20 分」）。
-      if (!hour) return minuteText
+      if (!hour) {
+        // 步长从 0 起（*/30）本身就是完整节奏；单个/列举分钟要补「每小时」，
+        // 否则 `0 * * * *` 会被读成「每 1 分钟」（每小时整点是它的真实含义）。
+        const m = minute ? minute.values : null
+        const step = m ? evenStep(m) : 0
+        if (!m || (m.length > 1 && step > 0 && m[0] === 0)) return minuteText
+        if (isEn) return `hourly ${minuteText}`
+        return minuteText === '整点' ? '每小时整点' : `每小时 ${minuteText}`
+      }
 
       const h = hour.values
       const step = evenStep(h)
@@ -311,6 +319,12 @@ window.__ModuleLoader__.load({
       if (!hour && !dom && !month && !dowRaw) {
         if (!minute) return isEn ? 'every minute' : '每分钟'
         if (minute.values.length === 60) return isEn ? 'every minute' : '每分钟'
+        if (minute.values.length === 1) {
+          // 单个分钟值不是「每 1 分钟」：`0 * * * *` 是每小时的整点。
+          const m = minute.values[0]
+          if (isEn) return m === 0 ? 'hourly on the hour' : `hourly at :${pad2(m)}`
+          return m === 0 ? '每小时整点' : `每小时第 ${pad2(m)} 分`
+        }
         const step = minute.values.length > 1 ? minute.values[1] - minute.values[0] : 1
         if (minute.values.every((v, i) => v === minute.values[0] + i * step)) {
           return isEn ? `every ${step} min` : `每 ${step} 分钟`

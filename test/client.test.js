@@ -387,8 +387,11 @@ test('client.js：计划人话解析（cron / 间隔 / 异常）', async () => {
   assert.equal(zh('5 9-22 * * *'), '9–22 点 · 第 05 分')
   assert.equal(zh('0 9-12 * * *'), '9–12 点 · 整点')
   assert.equal(zh('* 9-23 * * *'), '9–23 点 · 每分钟')
+  assert.equal(zh('0 * * * *'), '每小时整点', '单个分钟值不是「每 1 分钟」')
+  assert.equal(zh('30 * * * *'), '每小时第 30 分')
+  assert.equal(zh('0 * * * 1'), '周一 每小时整点')
   assert.equal(zh('*/15 9-17 * * 1-5'), '周一、周二、周三、周四、周五 9–17 点 · 每 15 分钟')
-  assert.equal(zh('0,5,20 * * * 1'), '周一 00、05、20 分', '全天按小时的列举不重复「每小时」')
+  assert.equal(zh('0,5,20 * * * 1'), '周一 每小时 00、05、20 分', '全天按小时的列举要补「每小时」')
   assert.equal(en('*/30 9-23 * * *'), 'every 30 min · 9–23 h')
   assert.deepEqual(plain(u.scheduleText({ kind: 'cron', cron: '*/30 9-23 * * *' }, 'zh')), {
     text: '9–23 点 · 每 30 分钟',
