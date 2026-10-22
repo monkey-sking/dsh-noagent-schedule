@@ -413,6 +413,13 @@ test('client.js：计划人话解析（cron / 间隔 / 异常）', async () => {
   const bad = u.scheduleText({ kind: 'cron', cron: 'nope' }, 'zh')
   assert.equal(bad.invalid, true)
   assert.equal(bad.text, 'nope')
+  assert.equal(u.scheduleText({ kind: 'cron', cron: '61 0 * * *' }, 'zh').invalid, true)
+  // 合法但暂时说不成人话（如月份 + 时间窗）：保留原文，但不打「cron 无效」
+  assert.equal(zh('0 9-23 * 6 *'), null)
+  assert.deepEqual(plain(u.scheduleText({ kind: 'cron', cron: '0 9-23 * 6 *' }, 'zh')), {
+    text: '0 9-23 * 6 *',
+    invalid: false,
+  })
   const ok = u.scheduleText({ kind: 'every', everySeconds: 600 }, 'zh')
   assert.deepEqual(plain(ok), { text: '每 10 分钟', invalid: false })
 })

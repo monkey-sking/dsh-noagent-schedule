@@ -381,7 +381,21 @@ window.__ModuleLoader__.load({
       return lang === 'en' ? `every ${n}s` : zhUnit(n, '秒')
     }
 
-    /** 任务的计划人话；解析失败返回 { text: cron 原文, invalid: true }。 */
+    /** cron 是否真的合法（只校验字段，不管能不能说成人话）。 */
+    function isValidCron(expression) {
+      const fields = String(expression ?? '').trim().split(/\s+/)
+      if (fields.length !== 5) return false
+      const parts = [
+        parseCronField(fields[0], 0, 59),
+        parseCronField(fields[1], 0, 23),
+        parseCronField(fields[2], 1, 31),
+        parseCronField(fields[3], 1, 12, MONTH_SHORT),
+        parseCronField(fields[4], 0, 7, DOW_SHORT),
+      ]
+      return !parts.some((part) => part && part.invalid)
+    }
+
+    /** 任务的计划人话；说不出人话时保留原文，只有 cron 真的非法才标 invalid。 */
     function scheduleText(schedule, lang = 'zh') {
       if (!schedule) return { text: '', invalid: false }
       if (schedule.kind === 'every') {
@@ -389,7 +403,8 @@ window.__ModuleLoader__.load({
         return { text: text ?? '', invalid: false }
       }
       const text = describeCron(schedule.cron, lang)
-      return text ? { text, invalid: false } : { text: String(schedule.cron ?? ''), invalid: true }
+      if (text) return { text, invalid: false }
+      return { text: String(schedule.cron ?? ''), invalid: !isValidCron(schedule.cron) }
     }
 
     /** 同一时区下两个时刻相差几个自然日（按 yyyy-mm-dd 比，不受夏令时影响）。 */
