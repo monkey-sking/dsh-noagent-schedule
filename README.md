@@ -1,5 +1,9 @@
 # dsh-noagent-schedule
 
+<!-- badges:start -->
+[![License](https://img.shields.io/github/license/monkey-sking/dsh-noagent-schedule?style=flat-square)](https://github.com/monkey-sking/dsh-noagent-schedule/blob/main/LICENSE) [![Last commit](https://img.shields.io/github/last-commit/monkey-sking/dsh-noagent-schedule?style=flat-square)](https://github.com/monkey-sking/dsh-noagent-schedule/commits/main) [![JavaScript](https://img.shields.io/github/languages/top/monkey-sking/dsh-noagent-schedule?style=flat-square)](https://github.com/monkey-sking/dsh-noagent-schedule/search?l=JavaScript) [![Release](https://img.shields.io/github/v/release/monkey-sking/dsh-noagent-schedule?style=flat-square)](https://github.com/monkey-sking/dsh-noagent-schedule/releases) [![views](https://hits.sh/github.com/monkey-sking/dsh-noagent-schedule.svg?style=flat-square&label=views&color=0e75b6)](https://github.com/monkey-sking/dsh-noagent-schedule)
+<!-- badges:end -->
+
 **Run shell scripts on a schedule inside DeepSeek Harness — with no model call and no token cost.**
 
 Every scheduling plugin in the DSH ecosystem delivers a message to a session or starts a new one,
