@@ -106,7 +106,9 @@ function sampleStatus() {
         enabled: true,
         timeZone: 'Asia/Shanghai',
         schedule: { kind: 'cron', cron: '30 18 * * *' },
-        command: 'echo ok',
+        // 真实形态：本机 46 个任务都经过同一个投递 wrapper。
+        command:
+          'python /x/dsh-runtime/scripts/02_deliver_wrapper.py --retry 2 --retry-delay 20 --target feishu -- python /x/scripts/ops_health.py',
         timeoutSeconds: 180,
         running: false,
         watch: false,
@@ -282,8 +284,16 @@ test('client.js：任务表完整展开（状态灯 / 计划 / 上次下次 / �
   // 停用徽标 + 事件型徽标
   assert.ok(texts.includes('disabled'))
   assert.ok(texts.includes('watchBadge'))
-  // 命令截断
-  assert.ok(texts.some((text) => text.endsWith('…')), '长命令应被截断')
+  // 任务行第二行报「真正在跑什么」，不是 wrapper 的公共参数：
+  // 46 个任务全走同一个 wrapper，截断原命令会得到 46 份一样的开头。
+  assert.ok(
+    texts.includes('ops_health.py → feishu'),
+    `任务行应给出「脚本 → 通道」摘要：${texts.join('|')}`,
+  )
+  assert.ok(
+    !texts.some((text) => text.includes('02_deliver_wrapper.py') || text.includes('--retry-delay')),
+    'wrapper 的公共参数不该出现在任务行',
+  )
 
   // 操作按钮：启用开关 / 运行 / 日志 / 展开，一条任务至少 4 个
   const buttons = nodes.filter((node) => node.type === 'button')
@@ -479,6 +489,51 @@ test('client.js：总览统计与筛选', async () => {
     'python 02_deliver_wrapper.py --target telegram',
   )
   assert.equal(u.shortenCommand('bash /Users/example/.local/share/dsh-runtime/scripts/x.sh 2>/dev/null'), 'bash x.sh 2>/dev/null')
+})
+
+test('client.js：describePayload 跳过 wrapper 公共前缀，只报真正在跑什么', async () => {
+  const { exports } = await loadClientModule()
+  const u = exports.utils
+  const W = 'python /x/dsh-runtime/scripts/02_deliver_wrapper.py'
+
+  // 46 个任务全走同一个 wrapper：摘要必须是「脚本 → 通道」，不能是那一串公共参数。
+  assert.equal(u.describePayload(`${W} --retry 2 --retry-delay 20 --target feishu -- python /x/scripts/ops_health.py`), 'ops_health.py → feishu')
+  assert.equal(u.describePayload(`${W} --echo-stdout --target telegram --title 'T' -- bash /x/scripts/wan_checkin.sh`), 'wan_checkin.sh → telegram')
+  // 无扩展名的可执行文件（cronctl）不能把整条绝对路径露出来
+  assert.equal(u.describePayload(`${W} --stdout-log-only --target feishu -- python /Users/example/cronctl prune`), 'cronctl → feishu')
+  // 解释器不是任务本体
+  assert.equal(u.describePayload(`${W} --target telegram -- python /x/scripts/app_daily.py`), 'app_daily.py → telegram')
+  // 没有 wrapper 的探针任务：只留脚本名
+  assert.equal(u.describePayload('python /x/scripts/x_replies_watch.py'), 'x_replies_watch.py')
+  assert.equal(u.describePayload('bash /x/scripts/x_candidates_probe.sh'), 'x_candidates_probe.sh')
+  assert.equal(u.describePayload(''), '')
+})
+
+test('client.js：buildGroups 按分类分组，需处理的组排最前', async () => {
+  const { exports } = await loadClientModule()
+  const u = exports.utils
+  const t = (key) => ({ groupUngrouped: '未分类' })[key] ?? key
+  const job = (id, category, ok) => ({
+    id,
+    category,
+    enabled: true,
+    last: ok === undefined ? null : { ok },
+  })
+  const groups = u.buildGroups([
+    job('a1', 'ops', true),
+    job('a2', 'ops', false), // ops 有 1 个失败 → 整体排最前
+    job('b1', 'x', true),
+    job('b2', 'x', true),
+    job('n1', null, true), // 无分类 → 排最后
+  ], t)
+
+  // vm 里造出来的数组跨 realm，deepEqual 会因原型不同而失败，用 JSON 比
+  assert.deepEqual(plain(groups.map((g) => g.label)), ['ops', 'x', '未分类'])
+  assert.equal(groups[0].alertCount, 1)
+  assert.equal(groups[0].jobs.length, 2)
+  // 停用的任务即使上次失败也不算「需处理」
+  const idle = u.buildGroups([{ id: 'z', category: 'z', enabled: false, last: { ok: false } }], t)
+  assert.equal(idle[0].alertCount, 0)
 })
 
 test('client.js：表单校验（cron / 间隔 / 超时 / 命令）', async () => {

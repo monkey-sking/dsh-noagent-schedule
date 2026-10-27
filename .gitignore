@@ -3,3 +3,7 @@ jobs.json
 node_modules/
 *.tgz
 .DS_Store
+
+# 改文件前的手工备份（*.bak、*.bak-<时间戳>）
+*.bak
+*.bak-*

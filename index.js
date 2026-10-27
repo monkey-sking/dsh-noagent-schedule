@@ -16,6 +16,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
+import { randomUUID } from 'node:crypto'
 
 export const name = '@local/dsh-noagent-schedule'
 
@@ -270,6 +271,34 @@ async function writeJsonAtomic(file, value) {
   await fs.rename(tmp, file)
 }
 
+/**
+ * 唤醒会话的权限预设（可选）。空字符串 / 缺省 = 不动目标会话的沙箱与审批策略。
+ *
+ * 背景（2026-10-27 实测）：常驻会话创建时会被 `pinInitialPermission` 钉成
+ * workspace-write + approval=ask；而 BOSS 这类任务必须写工作区外的
+ * ~/.hermes/workstreams/job-search，于是每次唤醒都触发一次 sandbox 升级审批。
+ * 审批没人点，turn 就挂在 `approval/asked` 上（实测 10:11 → 10:37 挂了 26 分钟）。
+ * 这里让任务在投递前把目标会话的权限钉成指定预设，唤醒就不会再被审批卡住。
+ */
+const WAKE_PERMISSION_PRESETS = {
+  'workspace-write': { sandbox: 'workspace-write', approval: 'ask' },
+  'danger-full-access': { sandbox: 'danger-full-access', approval: 'never' },
+}
+
+function normalizeWakePermission(jobId, value) {
+  if (value === undefined || value === null || value === '') return ''
+  if (typeof value !== 'string') {
+    throw new Error(`任务 ${jobId} 的 wakeOnChange.permission 必须是字符串`)
+  }
+  const name = value.trim()
+  if (!Object.hasOwn(WAKE_PERMISSION_PRESETS, name)) {
+    throw new Error(
+      `任务 ${jobId} 的 wakeOnChange.permission 未知：${name}（可用：${Object.keys(WAKE_PERMISSION_PRESETS).join(' / ')}）`,
+    )
+  }
+  return name
+}
+
 export function normalizeJobs(document) {
   const raw = Array.isArray(document) ? document : document?.jobs
   if (!Array.isArray(raw)) throw new Error('jobs 文件格式错误：需要 { "jobs": [...] } 或数组')
@@ -284,12 +313,21 @@ export function normalizeJobs(document) {
     const argv = Array.isArray(job.argv) ? job.argv.map(String) : undefined
     if (!command && !argv) throw new Error(`任务 ${id} 缺少 command 或 argv`)
 
-    // 事件型任务：仅当输出指纹变化时才唤醒会话。必须指明投给哪个会话。
+    // 事件型任务：仅当输出指纹变化时才唤醒会话。
+    //
+    // wakeMode=session（默认）：投给 wakeOnChange.sessionId 指定的常驻会话。
+    // wakeMode=fresh：每次唤醒新建一个会话，投递后即弃。长跑的常驻会话会把
+    // 上下文越堆越大（单个 step 从 11s 涨到 17s，turn 中位从 88s 涨到 278s），
+    // 且多个任务挤在一个会话里只能串行；任务本身不依赖对话历史时用这个模式。
     let wakeOnChange
     if (job.wakeOnChange && typeof job.wakeOnChange === 'object') {
+      const wakeMode = job.wakeOnChange.wakeMode === 'fresh' ? 'fresh' : 'session'
       const sessionId = job.wakeOnChange.sessionId
-      if (typeof sessionId !== 'string' || !sessionId.trim()) {
-        throw new Error(`任务 ${id} 的 wakeOnChange 缺少 sessionId`)
+      if (wakeMode === 'session' && (typeof sessionId !== 'string' || !sessionId.trim())) {
+        throw new Error(`任务 ${id} 的 wakeOnChange 缺少 sessionId（wakeMode=fresh 时可不填）`)
+      }
+      if (wakeMode === 'fresh' && typeof sessionId === 'string' && sessionId.trim()) {
+        throw new Error(`任务 ${id} 的 wakeOnChange 同时给了 wakeMode=fresh 和 sessionId，二者互斥`)
       }
       const keyPattern =
         typeof job.wakeOnChange.keyPattern === 'string' && job.wakeOnChange.keyPattern.trim()
@@ -303,7 +341,8 @@ export function normalizeJobs(document) {
         }
       }
       wakeOnChange = {
-        sessionId: sessionId.trim(),
+        wakeMode,
+        sessionId: wakeMode === 'session' ? sessionId.trim() : undefined,
         title: typeof job.wakeOnChange.title === 'string' ? job.wakeOnChange.title : undefined,
         prompt: typeof job.wakeOnChange.prompt === 'string' ? job.wakeOnChange.prompt : undefined,
         ignoreLines: Array.isArray(job.wakeOnChange.ignoreLines)
@@ -312,6 +351,7 @@ export function normalizeJobs(document) {
         notifyOnFirstRun: job.wakeOnChange.notifyOnFirstRun === true,
         onlyOnNew: job.wakeOnChange.onlyOnNew === true,
         keyPattern,
+        permission: normalizeWakePermission(id, job.wakeOnChange.permission),
       }
     }
 
@@ -328,6 +368,9 @@ export function normalizeJobs(document) {
       env: job.env && typeof job.env === 'object' ? job.env : {},
       timeoutSeconds: Number.isFinite(job.timeoutSeconds) ? job.timeoutSeconds : 300,
       quietWhenEmpty: job.quietWhenEmpty !== false,
+      // 分组标签：cronctl 从注册表的 category 写进来，面板按它分区。
+      // 必须在这里显式透传 —— normalizeJobs 是白名单，未列出的字段会被丢掉。
+      category: typeof job.category === 'string' && job.category.trim() ? job.category.trim() : undefined,
       wakeOnChange,
     }
   })
@@ -369,10 +412,18 @@ export function publicJob(job, stateEntry, lastRecord, running) {
     command: describeCommand(job),
     cwd: job.cwd,
     timeoutSeconds: job.timeoutSeconds,
+    category: job.category ?? null,
     // 事件型探针：脚本跑完只在输出变化时唤醒会话。UI 需要它来区分两类任务。
     watch: Boolean(job.wakeOnChange),
+    wakeMode: job.wakeOnChange?.wakeMode ?? null,
     wakeSessionId: job.wakeOnChange?.sessionId ?? null,
     wakeTitle: job.wakeOnChange?.title ?? null,
+    // 唤醒目标是否已被归档：true 表示本任务即使照常运行也不会有任何效果。
+    // 没有这个字段时，归档事故只表现为「模型没动」，从面板上完全看不出来。
+    wakeTargetArchived: stateEntry?.wakeTargetArchived === true,
+    // 上一次唤醒为什么没投出去（目前只有 wake_target_archived）。null 表示没有失败。
+    lastWakeError: stateEntry?.lastWakeError ?? null,
+    lastWakeErrorAt: stateEntry?.lastWakeErrorAt ?? null,
     running: running === true,
     lastFiredMinute: stateEntry?.lastFiredMinute ?? null,
     lastWakeAt: stateEntry?.lastWakeAt ?? null,
@@ -602,6 +653,9 @@ export function apply(ctx, config = {}) {
   const tickMs = Math.max(1000, Number(config.tickSeconds ?? 20) * 1000)
   const maxBytes = Number(config.maxCollectedBytes ?? 256 * 1024)
   const defaultTimeZone = config.timeZone || 'Asia/Shanghai'
+  // 归档集合的落盘位置。护栏（session-activity）挡不住强制归档，自检要用它兜底。
+  const workspaceStateFile =
+    config.workspaceStateFile || path.join(os.homedir(), '.dsh', 'storages', 'workspace.json')
 
   const statePath = path.join(stateDir, 'state.json')
   const runsLog = path.join(stateDir, 'runs.jsonl')
@@ -856,29 +910,179 @@ export function apply(ctx, config = {}) {
     return removed
   }
 
+  /**
+   * 新建一个会话，并把唤醒消息作为它的第一条消息投进去。
+   *
+   * 走 `sessionController.create()`：不传 sessionId 就是 mint 一个全新会话。
+   * 返回的 agent 还活着但没有 turn 在跑，`followup` 会立刻起第一轮；这一轮
+   * 跑完会话就闲置，不会像常驻会话那样把上下文越堆越大。
+   */
+  const wakeFreshSession = async (job, prompt, title) => {
+    const sessions = typeof ctx.get === 'function' ? ctx.get('sessionController') : undefined
+    if (!sessions || typeof sessions.create !== 'function') {
+      throw new Error('sessionController 服务不可用，无法新建会话')
+    }
+    const created = await sessions.create({ cwd: job.cwd })
+    const sessionId = created?.sessionId
+    if (typeof sessionId !== 'string' || !sessionId) {
+      throw new Error('sessionController.create() 没有返回 sessionId')
+    }
+    const resolved = await sessions.resolveAgent(sessionId)
+    if (!resolved || 'error' in resolved || !resolved.agent) {
+      throw new Error(`新建会话 ${sessionId} 后解析不到 agent：${resolved?.error?.message ?? 'unknown'}`)
+    }
+    resolved.agent.followup({
+      id: randomUUID(),
+      role: 'user',
+      content: [{ type: 'text', text: prompt }],
+      source: { kind: 'schedule' },
+    })
+    return { sessionId, title }
+  }
+
+  /**
+   * 读 workspace.json 的归档集合；文件不存在返回空集合，读坏了返回 null（表示「不知道」）。
+   *
+   * 定义在 wakeSession 之前：唤醒前就要用它挡掉「目标已归档」，
+   * 不能等到 tick 里那个 5 分钟自检才第一次发现。
+   */
+  const readArchivedSessionIds = async () => {
+    let document
+    try {
+      document = JSON.parse(await fs.readFile(workspaceStateFile, 'utf8'))
+    } catch (error) {
+      if (error && error.code === 'ENOENT') return []
+      return null
+    }
+    const ids = document && document.global && document.global.archivedSessionIds
+    return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : null
+  }
+
+  /**
+   * 唤醒目标是否已归档。
+   *
+   * 为 true 时唤醒必须**显式失败**，不能照常 create：
+   *   ArchivedSessionGate 会在 agent/pre-step 直接 reject，整轮记 blocked，
+   *   模型一次都不跑；而这边 create 成功、lastWakeAt 有值、面板全绿 ——
+   *   2026-10-26 实测就是这样静默空转了两天。宁可让任务显式失败，
+   *   也不要让「看起来在跑」掩盖「什么都没做」。
+   */
+  const isWakeTargetArchived = async (sessionId) => {
+    if (!sessionId) return false
+    const archived = await readArchivedSessionIds()
+    // 读不出来（null）不阻断：宁可放过一次，也不要因为状态文件临时不可读就停掉自动化。
+    return archived === null ? false : archived.includes(sessionId)
+  }
+
+  /**
+   * 投递前把目标会话的权限钉成任务要求的预设。
+   *
+   * 走的是会话自己记事件的官方通道（和 dsh-permission-presets 的
+   * `pinInitialPermission` 一模一样的三条事件），不是去改 session JSONL 文件。
+   * 三条都要写：`permission/preset` 只记预设名，真正生效的是 sandbox/mode 与
+   * approval/policy 两个旋钮，缺一条就会出现「显示 danger-full-access 但仍然
+   * 每次弹审批」的错位。
+   */
+  const pinWakePermission = async (job, sessionId) => {
+    const preset = job.wakeOnChange?.permission
+    if (!preset) return { ok: true, skipped: true }
+    const spec = WAKE_PERMISSION_PRESETS[preset]
+    if (!spec) return { ok: false, error: `unknown_permission_preset:${preset}` }
+    const sessions = typeof ctx.get === 'function' ? ctx.get('sessions') : ctx.sessions
+    if (!sessions || typeof sessions.get !== 'function') {
+      log(`无法设置唤醒权限：sessions 服务不可用（任务 ${job.id}）`)
+      return { ok: false, error: 'sessions_unavailable' }
+    }
+    const session = sessions.get(sessionId)
+    if (!session || typeof session.append !== 'function') {
+      log(`无法设置唤醒权限：会话 ${sessionId} 不可用（任务 ${job.id}）`)
+      return { ok: false, error: 'session_unavailable' }
+    }
+    try {
+      session.append('approval/policy', { policy: spec.approval })
+      session.append('sandbox/mode', { mode: spec.sandbox })
+      session.append('permission/preset', { preset })
+      log(`已把会话 ${sessionId} 的权限钉成 ${preset}（任务 ${job.id}）`)
+      return { ok: true }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      log(`设置唤醒权限失败（任务 ${job.id}）：${message}`)
+      return { ok: false, error: message }
+    }
+  }
+
   /** 把“有新内容”投递到目标会话（schedule 的一次性 trigger，延迟 1 秒）。 */
   const wakeSession = async (job, change) => {
     const wake = job.wakeOnChange
+    if (!wake) return { ok: false, error: 'no_wake_config' }
+    const prompt = renderWakePrompt(wake.prompt, job, change)
+    const title = wake.title ? renderWakePrompt(wake.title, job, change) : `[${job.name}]`
+
+    // wakeMode=fresh：每次新建会话，跑完即弃。
+    if (wake.wakeMode === 'fresh') {
+      try {
+        const { sessionId } = await wakeFreshSession(job, prompt, title)
+        state.jobs[job.id] = {
+          ...(state.jobs[job.id] ?? {}),
+          fingerprintText: change.current,
+          lastWakeAt: new Date().toISOString(),
+          lastWakeScheduleId: null,
+          lastFreshSessionId: sessionId,
+        }
+        await writeJsonAtomic(statePath, state).catch(() => {})
+        log(`已新建会话 ${sessionId} 并投递唤醒（任务 ${job.id}，原因 ${change.reason}）`)
+        return { ok: true, sessionId, fresh: true }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        log(`新建会话唤醒失败（任务 ${job.id}）：${message}`)
+        return { ok: false, error: message }
+      }
+    }
+
+    // 目标会话被归档：投进去也不会有人跑（ArchivedSessionGate 直接 reject）。
+    // 这里显式失败并记进 state，让面板和 noagent_status 都能看出「任务没生效」，
+    // 而不是照常更新 lastWakeAt 假装成功。
+    if (await isWakeTargetArchived(wake.sessionId)) {
+      state.jobs[job.id] = {
+        ...(state.jobs[job.id] ?? {}),
+        wakeTargetArchived: true,
+        lastWakeError: 'wake_target_archived',
+        lastWakeErrorAt: new Date().toISOString(),
+      }
+      await writeJsonAtomic(statePath, state).catch(() => {})
+      log(
+        `⛔ 唤醒目标会话 ${wake.sessionId} 已归档，跳过投递（任务 ${job.id}）：先解除归档，或把 wakeOnChange.sessionId 指向别的会话`,
+      )
+      return { ok: false, error: 'wake_target_archived' }
+    }
+
     const scheduleSvc = typeof ctx.get === 'function' ? ctx.get('schedule') : ctx.schedule
     if (!scheduleSvc || typeof scheduleSvc.create !== 'function') {
       log(`无法唤醒：schedule 服务不可用（任务 ${job.id}）`)
       return { ok: false, error: 'schedule_unavailable' }
     }
-    const prompt = renderWakePrompt(wake.prompt, job, change)
+    // 权限预设先钉好再投递：否则这次唤醒很可能又挂在 sandbox 升级审批上。
+    // 钉失败不阻断投递（任务至少还能跑），但要在日志里留痕。
+    const pinned = await pinWakePermission(job, wake.sessionId)
     // 新一次唤醒前先收掉上一条已投递的唤醒行，列表里最多只留当前这一条。
     const pruned = await sweepWakeSchedules(job, { minAgeMs: 0 })
     if (pruned > 0) log(`已清理 ${pruned} 条历史唤醒任务（任务 ${job.id}）`)
     try {
       const record = await scheduleSvc.create(wake.sessionId, {
-        title: wake.title ? renderWakePrompt(wake.title, job, change) : `[${job.name}]`,
+        title,
         prompt,
         after_seconds: 1,
       })
+      // 成功投递：顺手清掉上一次的归档失败记录，避免面板挂着过期错误。
+      const { lastWakeError, lastWakeErrorAt, ...carried } = state.jobs[job.id] ?? {}
       state.jobs[job.id] = {
-        ...(state.jobs[job.id] ?? {}),
+        ...carried,
         fingerprintText: change.current,
         lastWakeAt: new Date().toISOString(),
         lastWakeScheduleId: record?.id ?? null,
+        wakeTargetArchived: false,
+        lastWakePermission: job.wakeOnChange?.permission || null,
+        lastWakePermissionError: pinned.ok ? undefined : pinned.error,
       }
       await writeJsonAtomic(statePath, state).catch(() => {})
       log(`已唤醒会话 ${wake.sessionId}（任务 ${job.id}，原因 ${change.reason}）`)
@@ -944,6 +1148,44 @@ export function apply(ctx, config = {}) {
     }
   })()
 
+  // 归档自检（节流 5 分钟）。
+  //
+  // 护栏只能拦住「正常归档」；带 stopActivity 的强制归档绕得过去，归档之后本插件
+  // 依旧 create 成功、lastWakeAt 照常更新，任务静默空转。所以自己再看一眼：唤醒
+  // 目标进了归档集合就把 wakeTargetArchived 记进 state，noagent_status 能直接看到。
+  const archiveCheckMs = 5 * 60 * 1000
+  let archiveCheckedAt = 0
+  const checkWakeTargetsArchived = async (now) => {
+    if (now.getTime() - archiveCheckedAt < archiveCheckMs) return
+    archiveCheckedAt = now.getTime()
+    const archived = await readArchivedSessionIds()
+    if (archived === null) return // 读不出来就不判断，不制造噪音
+    const set = new Set(archived)
+    let dirty = false
+    for (const job of jobs) {
+      const wake = job.wakeOnChange
+      if (!wake || wake.wakeMode !== 'session') continue
+      const broken = set.has(wake.sessionId)
+      const entry = state.jobs[job.id] ?? {}
+      const staleError = entry.lastWakeError === 'wake_target_archived'
+      // 状态没变、也没有残留的归档错误要清，就什么都不做。
+      if (Boolean(entry.wakeTargetArchived) === broken && (broken || !staleError)) continue
+      if (broken) {
+        state.jobs[job.id] = { ...entry, wakeTargetArchived: true }
+        log(
+          `⛔ 唤醒目标会话已被归档，本任务不会再产生任何效果（任务 ${job.id} / 会话 ${wake.sessionId}）：先解除归档，或把 wakeOnChange 指向别的会话`,
+        )
+      } else {
+        // 解除归档了：清掉归档标记和上一次的失败原因，别让面板一直挂着旧错误。
+        const { lastWakeError, lastWakeErrorAt, ...rest } = entry
+        state.jobs[job.id] = { ...rest, wakeTargetArchived: false }
+        if (staleError) log(`✅ 唤醒目标会话已解除归档，任务 ${job.id} 恢复投递`)
+      }
+      dirty = true
+    }
+    if (dirty) await writeJsonAtomic(statePath, state).catch(() => {})
+  }
+
   const tick = async () => {
     if (stopped) return
     if (!stateReady) await loadState
@@ -952,6 +1194,7 @@ export function apply(ctx, config = {}) {
       jobsLoadedAt = Date.now()
     }
     const now = new Date()
+    await checkWakeTargetsArchived(now)
     // 唤醒行清理：一次性唤醒投递完成后就该从「自动化任务」列表里消失，
     // 否则同名的「已结束 · 仅一次」会一直堆积（见 sweepWakeSchedules）。
     for (const job of jobs) {
@@ -1024,6 +1267,59 @@ export function apply(ctx, config = {}) {
       throw operationError('jobs_invalid', `任务清单格式错误：${messageOf(error)}`)
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // 归档护栏：本插件依赖的唤醒目标会话，不允许被静默归档
+  //
+  // 为什么必须有（2026-10-26 实测事故）：
+  //   四个 job 的 wakeOnChange 指向常驻会话，那些会话被归档后，
+  //   dsh-api-session-controller 的 ArchivedSessionGate 会在 agent/pre-step
+  //   直接 reject，整轮记为 turn/end reason=blocked —— 模型一次都没跑。
+  //   而本插件这边 schedule.create() 成功、lastWakeAt 有值、探针 exit 0，
+  //   面板上完全健康，自动回复静默失效两天才发现。
+  //
+  // 机制：workspace/session-activity 是归档前的查询闸门。dsh-schedule 已经注册了
+  //   自己的 provider（带定时任务的会话归档会被拒绝），本插件此前一个都没注册，
+  //   于是系统问「这个会话还有活吗」时无人应答，被判定为没活，归档放行。
+  //   注册之后，归档会以 workspace/session-active 失败，并列出依赖它的 job。
+  // ---------------------------------------------------------------------------
+  ctx.effect(() => {
+    if (typeof ctx.on !== 'function') return () => {}
+    const off = ctx.on('workspace/session-activity', async ({ sessionId }, next) => {
+      const rest = await next()
+      let current
+      try {
+        current = await loadJobsStrict()
+      } catch (error) {
+        // fail closed：清单读不出来就无法证明「没有依赖」，宁可拒绝归档也不要静默放行。
+        log(`归档检查读不到任务清单，按「有依赖」处理：${messageOf(error)}`)
+        return [
+          {
+            kind: 'noagent',
+            items: [{ id: 'jobs-unreadable', label: `noagent 任务清单读取失败：${jobsFile}` }],
+          },
+          ...rest,
+        ]
+      }
+      const dependents = current.filter(
+        (job) => job.wakeOnChange?.wakeMode === 'session' && job.wakeOnChange?.sessionId === sessionId,
+      )
+      if (dependents.length === 0) return rest
+      return [
+        {
+          kind: 'noagent',
+          items: dependents.map((job) => ({
+            id: job.id,
+            label: `${job.enabled === false ? '[已停用] ' : ''}${job.name}（noagent 唤醒目标）`,
+          })),
+        },
+        ...rest,
+      ]
+    })
+    return () => {
+      if (typeof off === 'function') off()
+    }
+  })
 
   /** 唯一的操作实现：UI 路由与 agent 工具都调这些方法。 */
   const operations = {

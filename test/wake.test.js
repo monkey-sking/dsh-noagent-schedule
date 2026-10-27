@@ -390,3 +390,238 @@ test('keyPattern：同一会话正文变了不唤醒，冒出新会话才唤醒'
   assert.equal(wakes.length, 1, '只有新会话那一次该唤醒')
   assert.match(wakes[0].prompt, /李四/)
 })
+
+test('wakeMode=fresh：每次唤醒新建会话并直接投递，不经过 schedule', async () => {
+  const dir = await fs.mkdtemp('/tmp/noagent-fresh-')
+  const jobsFile = `${dir}/jobs.json`
+  await fs.writeFile(jobsFile, JSON.stringify({
+    jobs: [{
+      id: 'probe',
+      name: '探针',
+      everySeconds: 30,
+      command: 'echo',
+      // notifyOnFirstRun 打开：首次也唤醒，这样两次输出变化都该产生一次投递。
+      wakeOnChange: { wakeMode: 'fresh', prompt: '新内容：{{output}}', notifyOnFirstRun: true },
+    }],
+  }))
+
+  const RealDate = Date
+  let offset = 0
+  globalThis.Date = class extends RealDate {
+    constructor(...args) { super(...(args.length ? args : [RealDate.now() + offset])) }
+    static now() { return RealDate.now() + offset }
+  }
+
+  const { ctx, ticks } = makeCtx(['第一次内容', '第二次内容'])
+  // fresh 模式：用 sessionController 造会话 + agents 投递；schedule 若有调用即算回归。
+  const created = []
+  const delivered = []
+  const scheduleCalls = []
+  const inner = (name) => {
+    if (name === 'sessionController') {
+      return {
+        create: async (req) => {
+          const sessionId = `session-fresh-${created.length + 1}`
+          created.push({ sessionId, cwd: req?.cwd })
+          return { sessionId }
+        },
+        resolveAgent: async (sessionId) => ({
+          agent: { followup: (message) => delivered.push({ sessionId, message }) },
+        }),
+      }
+    }
+    if (name === 'schedule') return { create: async (...a) => { scheduleCalls.push(a); return { id: 'x' } } }
+    return undefined
+  }
+  const baseGet = ctx.get
+  ctx.get = (name) => inner(name) ?? baseGet(name)
+
+  try {
+    apply(ctx, { jobsFile, stateDir: dir, tickSeconds: 1, jobsReloadMs: 0 })
+    for (let i = 0; i < 2; i += 1) {
+      await ticks[0]()
+      await new Promise((r) => setTimeout(r, 150))
+      offset += 61_000
+    }
+  } finally {
+    globalThis.Date = RealDate
+  }
+
+  assert.equal(created.length, 2, '两次输出变化应各建一个新会话')
+  assert.notEqual(created[0].sessionId, created[1].sessionId, '每次都是新会话，不能复用')
+  assert.equal(delivered.length, 2, '两次都应投递')
+  assert.equal(scheduleCalls.length, 0, 'fresh 模式不应走 schedule 投递')
+  assert.match(delivered[0].message.content[0].text, /第一次内容/)
+  assert.match(delivered[1].message.content[0].text, /第二次内容/)
+  assert.equal(delivered[0].message.role, 'user')
+  assert.equal(delivered[0].message.source.kind, 'schedule')
+  assert.ok(delivered[0].message.id, '消息必须带 id')
+})
+
+test('normalizeJobs：wakeMode=fresh 与 sessionId 互斥，缺少 sessionId 时 session 模式报错', async () => {
+  const bad = () => normalizeJobs({
+    jobs: [{
+      id: 'x', everySeconds: 30, command: 'echo',
+      wakeOnChange: { wakeMode: 'fresh', sessionId: 'session-a' },
+    }],
+  })
+  assert.throws(bad, /互斥/)
+
+  const missing = () => normalizeJobs({
+    jobs: [{ id: 'y', everySeconds: 30, command: 'echo', wakeOnChange: { prompt: 'x' } }],
+  })
+  assert.throws(missing, /缺少 sessionId/)
+
+  const ok = normalizeJobs({
+    jobs: [{ id: 'z', everySeconds: 30, command: 'echo', wakeOnChange: { wakeMode: 'fresh' } }],
+  })
+  assert.equal(ok[0].wakeOnChange.wakeMode, 'fresh')
+  assert.equal(ok[0].wakeOnChange.sessionId, undefined)
+})
+
+test('归档护栏：唤醒目标被归档时不投递，并把失败原因记进 state', async () => {
+  const dir = await fs.mkdtemp('/tmp/noagent-archived-')
+  const jobsFile = `${dir}/jobs.json`
+  const workspaceStateFile = `${dir}/workspace.json`
+  await fs.writeFile(jobsFile, JSON.stringify({
+    jobs: [{
+      id: 'probe',
+      name: '探针',
+      everySeconds: 30,
+      command: 'echo',
+      wakeOnChange: { sessionId: 'session-abc', prompt: '新内容：{{output}}' },
+    }],
+  }))
+  // 目标会话在归档集合里：投进去只会被 ArchivedSessionGate 拦成 blocked。
+  await fs.writeFile(workspaceStateFile, JSON.stringify({
+    global: { archivedSessionIds: ['session-abc'] },
+  }))
+
+  const RealDate = Date
+  let offset = 0
+  globalThis.Date = class extends RealDate {
+    constructor(...args) {
+      super(...(args.length ? args : [RealDate.now() + offset]))
+    }
+    static now() {
+      return RealDate.now() + offset
+    }
+  }
+
+  const { ctx, ticks, wakes } = makeCtx(['OWED 0', 'OWED 1 | 张三 | 在吗'])
+  try {
+    apply(ctx, { jobsFile, stateDir: dir, tickSeconds: 1, jobsReloadMs: 0, workspaceStateFile })
+    const tick = async () => {
+      await ticks[0]()
+      await new Promise((r) => setTimeout(r, 150))
+      offset += 61_000
+    }
+    await tick() // 基线
+    await tick() // 内容变了，但目标已归档 → 不能投递
+  } finally {
+    globalThis.Date = RealDate
+  }
+
+  assert.equal(wakes.length, 0, '目标归档时绝不能照常 create，否则是假装成功')
+  const state = JSON.parse(await fs.readFile(`${dir}/state.json`, 'utf8'))
+  assert.equal(state.jobs.probe.lastWakeError, 'wake_target_archived')
+  assert.equal(state.jobs.probe.wakeTargetArchived, true)
+  assert.equal(state.jobs.probe.lastWakeAt, undefined, '失败时不应更新 lastWakeAt')
+})
+
+test('归档护栏：解除归档后恢复投递并清掉失败原因', async () => {
+  const dir = await fs.mkdtemp('/tmp/noagent-unarchived-')
+  const jobsFile = `${dir}/jobs.json`
+  const workspaceStateFile = `${dir}/workspace.json`
+  await fs.writeFile(jobsFile, JSON.stringify({
+    jobs: [{
+      id: 'probe',
+      name: '探针',
+      everySeconds: 30,
+      command: 'echo',
+      wakeOnChange: { sessionId: 'session-abc', prompt: '新内容：{{output}}' },
+    }],
+  }))
+  await fs.writeFile(workspaceStateFile, JSON.stringify({
+    global: { archivedSessionIds: ['session-abc'] },
+  }))
+
+  const RealDate = Date
+  let offset = 0
+  globalThis.Date = class extends RealDate {
+    constructor(...args) {
+      super(...(args.length ? args : [RealDate.now() + offset]))
+    }
+    static now() {
+      return RealDate.now() + offset
+    }
+  }
+
+  const { ctx, ticks, wakes } = makeCtx(['OWED 0', 'OWED 1 | 张三 | 在吗', 'OWED 2 | 李四 | 你好'])
+  try {
+    apply(ctx, { jobsFile, stateDir: dir, tickSeconds: 1, jobsReloadMs: 0, workspaceStateFile })
+    const tick = async () => {
+      await ticks[0]()
+      await new Promise((r) => setTimeout(r, 150))
+      offset += 61_000
+    }
+    await tick() // 基线
+    await tick() // 归档中 → 不投递
+    assert.equal(wakes.length, 0)
+
+    // 解除归档
+    await fs.writeFile(workspaceStateFile, JSON.stringify({ global: { archivedSessionIds: [] } }))
+    await tick() // 内容又变了 → 恢复投递
+  } finally {
+    globalThis.Date = RealDate
+  }
+
+  assert.equal(wakes.length, 1, '解除归档后应恢复投递')
+  assert.equal(wakes[0].sid, 'session-abc')
+  const state = JSON.parse(await fs.readFile(`${dir}/state.json`, 'utf8'))
+  assert.equal(state.jobs.probe.lastWakeError, undefined, '恢复后不应残留失败原因')
+  assert.ok(state.jobs.probe.lastWakeAt, '恢复后应更新 lastWakeAt')
+})
+
+test('归档护栏：session-activity provider 拦住依赖本任务的会话归档', async () => {
+  const dir = await fs.mkdtemp('/tmp/noagent-guard-')
+  const jobsFile = `${dir}/jobs.json`
+  await fs.writeFile(jobsFile, JSON.stringify({
+    jobs: [{
+      id: 'boss-chat-watch',
+      name: 'BOSS 消息探针',
+      everySeconds: 120,
+      command: 'echo',
+      wakeOnChange: { sessionId: 'session-abc', prompt: '有新消息' },
+    }],
+  }))
+
+  const handlers = new Map()
+  const ctx = {
+    logger: { info() {} },
+    effect: (fn) => fn(),
+    interval: () => () => {},
+    on: (event, handler) => {
+      handlers.set(event, handler)
+      return () => handlers.delete(event)
+    },
+    get: () => undefined,
+    subprocess: { spawn: () => { throw new Error('本测试不跑脚本') } },
+  }
+  apply(ctx, { jobsFile, stateDir: dir, tickSeconds: 1, jobsReloadMs: 0 })
+  // apply 内部是异步初始化，等一拍让 provider 注册完
+  await new Promise((r) => setTimeout(r, 150))
+
+  const provider = handlers.get('workspace/session-activity')
+  assert.ok(provider, '必须注册 workspace/session-activity，否则归档无人拦截')
+
+  // 依赖它的会话：报出 job，让 archiveSession 抛 WorkspaceActiveSessionError
+  const blocked = await provider({ sessionId: 'session-abc' }, () => Promise.resolve([]))
+  assert.equal(blocked.length, 1)
+  assert.equal(blocked[0].kind, 'noagent')
+  assert.match(blocked[0].items[0].label, /BOSS 消息探针/)
+
+  // 无关会话：原样透传下游结果，不干扰别人
+  const passed = await provider({ sessionId: 'session-other' }, () => Promise.resolve([{ kind: 'schedule' }]))
+  assert.deepEqual(passed, [{ kind: 'schedule' }])
+})

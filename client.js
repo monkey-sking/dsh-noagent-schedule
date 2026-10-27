@@ -104,6 +104,28 @@ window.__ModuleLoader__.load({
       closeLog: 'Close',
       logFor: 'Run {time}',
       latestRun: 'Latest run',
+      groupBy: 'Group by category',
+      groupUngrouped: 'Ungrouped',
+      groupCollapse: 'Collapse',
+      groupExpand: 'Expand',
+      groupCount: '{n} tasks',
+      groupAlerts: '{n} need attention',
+      categories: 'Categories',
+      allCategories: 'All categories',
+      sortLabel: 'Sort tasks',
+      sortAttention: 'Needs attention first',
+      sortName: 'Name',
+      sortNext: 'Next run',
+      sortRecent: 'Recently run',
+      compact: 'Compact rows',
+      resetFilters: 'Clear filters',
+      resultCount: '{n} matching / {total} tasks',
+      pageInfo: '{from}–{to} of {n} · Page {page}/{pages}',
+      previousPage: 'Previous',
+      nextPage: 'Next',
+      pageSize: 'Tasks per page',
+      collapseAll: 'Collapse all',
+      expandAll: 'Expand all',
     }
 
     const zh = {
@@ -177,6 +199,28 @@ window.__ModuleLoader__.load({
       closeLog: '关闭',
       logFor: '运行于 {time}',
       latestRun: '最近一次',
+      groupBy: '按分类分组',
+      groupUngrouped: '未分类',
+      groupCollapse: '收起',
+      groupExpand: '展开',
+      groupCount: '{n} 个任务',
+      groupAlerts: '{n} 个需处理',
+      categories: '任务分类',
+      allCategories: '全部分类',
+      sortLabel: '任务排序',
+      sortAttention: '异常优先',
+      sortName: '按名称',
+      sortNext: '按下次运行',
+      sortRecent: '按最近运行',
+      compact: '紧凑列表',
+      resetFilters: '清除筛选',
+      resultCount: '匹配 {n} / 共 {total} 个任务',
+      pageInfo: '第 {from}–{to} 项，共 {n} 项 · 第 {page}/{pages} 页',
+      previousPage: '上一页',
+      nextPage: '下一页',
+      pageSize: '每页任务数',
+      collapseAll: '全部收起',
+      expandAll: '全部展开',
     }
 
     // -------------------------------------------------------------------------
@@ -534,16 +578,78 @@ window.__ModuleLoader__.load({
     }
 
     /** 工具条筛选：all / enabled / disabled / failing。 */
-    function filterJobs(jobs, filter, query) {
+    /**
+     * 按 category 把任务分组。分组顺序按「组内有多少个需处理的任务」降序，
+     * 再有问题的组里任务多的优先 —— 打开面板第一眼看到的就是该管的。
+     * 没有 category 的任务归到「未分类」，排最后。
+     */
+    function buildGroups(jobs, t) {
+      const buckets = new Map()
+      for (const job of jobs) {
+        const key = job.category || '__ungrouped__'
+        const list = buckets.get(key) ?? []
+        list.push(job)
+        buckets.set(key, list)
+      }
+      const alertOf = (job) => (job.enabled && job.last && job.last.ok === false ? 1 : 0)
+      const groups = []
+      for (const [key, list] of buckets) {
+        groups.push({
+          key,
+          label: key === '__ungrouped__' ? t('groupUngrouped') : key,
+          jobs: list,
+          alertCount: list.reduce((sum, job) => sum + alertOf(job), 0),
+        })
+      }
+      groups.sort((a, b) => {
+        if (a.key === '__ungrouped__') return 1
+        if (b.key === '__ungrouped__') return -1
+        if (b.alertCount !== a.alertCount) return b.alertCount - a.alertCount
+        if (b.jobs.length !== a.jobs.length) return b.jobs.length - a.jobs.length
+        return a.label.localeCompare(b.label)
+      })
+      return groups
+    }
+
+    function filterJobs(jobs, filter, query, category = '') {
       const needle = String(query ?? '').trim().toLowerCase()
       return jobs.filter((job) => {
+        if (category && (job.category || '__ungrouped__') !== category) return false
+        if (filter === 'running' && !job.running) return false
         if (filter === 'enabled' && !job.enabled) return false
         if (filter === 'disabled' && job.enabled) return false
         if (filter === 'failing' && (job.last?.ok !== false || job.enabled === false)) return false
         if (!needle) return true
-        const haystack = `${job.name ?? ''} ${job.id ?? ''} ${job.command ?? ''}`.toLowerCase()
-        return haystack.includes(needle)
+        const haystack = `${job.name ?? ''} ${job.id ?? ''} ${job.command ?? ''} ${job.category ?? ''}`.toLowerCase()
+        return needle.split(/\s+/).every((word) => haystack.includes(word))
       })
+    }
+
+    function sortJobs(jobs, sort = 'attention') {
+      const priority = (job) => job.enabled && job.last?.ok === false ? 0 : job.running ? 1 : job.enabled ? 2 : 3
+      const nextTime = (job) => job.enabled && Number.isFinite(job.nextRunAt) ? job.nextRunAt : Infinity
+      const lastTime = (job) => Date.parse(job.last?.startedAt) || 0
+      return [...jobs].sort((a, b) => {
+        let diff = 0
+        if (sort === 'attention') diff = priority(a) - priority(b)
+        if (sort === 'next') {
+          const left = nextTime(a), right = nextTime(b)
+          diff = left === right ? 0 : left < right ? -1 : 1
+        }
+        if (sort === 'recent') diff = lastTime(b) - lastTime(a)
+        return diff || String(a.name || a.id).localeCompare(String(b.name || b.id)) || String(a.id).localeCompare(String(b.id))
+      })
+    }
+
+    function paginateJobs(jobs, requestedPage, size) {
+      const pageSize = [15, 30, 50].includes(Number(size)) ? Number(size) : 15
+      const pages = Math.max(1, Math.ceil(jobs.length / pageSize))
+      const page = Math.min(pages, Math.max(1, Math.floor(Number(requestedPage)) || 1))
+      const offset = (page - 1) * pageSize
+      return {
+        jobs: jobs.slice(offset, offset + pageSize), page, pages,
+        from: jobs.length ? offset + 1 : 0, to: Math.min(offset + pageSize, jobs.length), n: jobs.length,
+      }
     }
 
     /**
@@ -551,6 +657,42 @@ window.__ModuleLoader__.load({
      * 做法是抹掉每次都一样的噪声 —— 家目录前缀、venv 里的 python 绝对路径、
      * 过长的中间目录（只留文件名），再按长度截断。完整命令在悬停时给出。
      */
+    /**
+     * 一行摘要：这个任务「实际在跑什么」。
+     *
+     * 本机 46 个任务全都经过同一个投递 wrapper，`shortenCommand` 截出来的第二行
+     * 是 46 份一模一样的 `--retry 2 --retry-delay 20 --stdout-log`，等于没写。
+     * 这里跳过 wrapper 的公共参数，只留两样有用的：真正执行的脚本 + 发到哪个通道。
+     */
+    function describePayload(command) {
+      const text = String(command ?? '').trim()
+      if (!text) return ''
+      const channel = (text.match(/--target\s+(\S+)/) || [])[1] || ''
+      // wrapper 之后的部分才是真正的负载：`... -- bash foo.sh` / `... -- python bar.py`
+      const tail = text.includes(' -- ') ? text.slice(text.lastIndexOf(' -- ') + 4) : text
+      let payload = tail
+      // 去掉 shell 关键字与解释器路径，只留脚本名
+      payload = payload.replace(/^(bash|sh|zsh|env)\s+/, '')
+      const tokens = payload.split(/\s+/).filter(Boolean)
+      const baseName = (p) => String(p).split('/').filter(Boolean).pop() || String(p)
+      // python/bash/node … 是解释器，不是任务本体；跳过它们找真正的脚本。
+      const INTERPRETERS = new Set(['python', 'python2', 'python3', 'bash', 'sh', 'zsh', 'node', 'env', 'npx', 'ruby', 'perl'])
+      const isInterp = (tok) => INTERPRETERS.has(baseName(tok).replace(/\.exe$/, ''))
+      // 优先找带扩展名的脚本；找不到就退回第一个非选项参数的 basename
+      // （cronctl 这类无扩展名的可执行文件走这一支，否则整条绝对路径会露出来）。
+      const script = tokens.find((tok) => /\.[a-z0-9]+$/i.test(tok) && !tok.startsWith('-') && !isInterp(tok))
+      const firstArg = tokens.find((tok) => !tok.startsWith('-') && !isInterp(tok))
+      let main = baseName(script || firstArg || '')
+      if (main.length > 42) main = `…${main.slice(-41)}`
+      // 没有 wrapper 的任务（探针等）：同样跳过解释器，只留脚本
+      if (!channel) {
+        const rest = tokens.filter((tok) => !isInterp(tok) && !tok.startsWith('-'))
+        if (!rest.length) return shortenCommand(payload, 96)
+        return baseName(rest[0])
+      }
+      return channel ? `${main} → ${channel}` : main
+    }
+
     function shortenCommand(command, max = 96) {
       let text = String(command ?? '').trim()
       // venv 里的解释器只留 python
@@ -698,6 +840,27 @@ window.__ModuleLoader__.load({
       .noagent-stat[data-active="true"] { border-color: var(--dsw-alias-brand-primary); }
 
       .noagent-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .noagent-controls { position: sticky; top: -1px; z-index: 3; background: var(--dsw-alias-bg-base); padding: 12px 0; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+      .noagent-categories { display: flex; flex-wrap: wrap; gap: 6px; }
+      .noagent-category { display: inline-flex; align-items: center; gap: 7px; }
+      .noagent-category[aria-pressed="true"] { border-color: var(--dsw-alias-brand-primary); background: var(--dsw-alias-interactive-bg-hover); font-weight: 600; }
+      .noagent-category-count { color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }
+      .noagent-select { width: auto; max-width: 100%; }
+      .noagent-results, .noagent-pagination { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .noagent-results > :first-child, .noagent-pagination > :first-child { margin-right: auto; }
+      .noagent-pagination { padding: 10px 0; }
+      .noagent-table-wrap[data-compact="true"] .noagent-table td { padding-top: 6px; padding-bottom: 6px; }
+      .noagent-table-wrap[data-compact="true"] .noagent-group-row > td { padding: 0; }
+      .noagent-seg > button:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+      @media (max-width: 640px) {
+        .noagent-scroll { padding: 12px; gap: 10px; }
+        .noagent-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .noagent-search { flex-basis: 100%; min-width: 0; }
+        .noagent-toolbar { gap: 6px; }
+        .noagent-head { flex-wrap: wrap; }
+        .noagent-controls { position: static; }
+        .noagent-pagination > :first-child { flex-basis: 100%; }
+      }
       .noagent-search { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: var(--dsw-radius-md); border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); flex: 1 1 220px; min-width: 160px; }
       .noagent-search::placeholder { color: var(--dsw-alias-label-tertiary); }
       .noagent-search:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-brand-primary)); outline-offset: 1px; }
@@ -716,7 +879,7 @@ window.__ModuleLoader__.load({
       .noagent-table tr:last-child td { border-bottom: 0; }
       .noagent-table tr[data-detail-row="true"] > td { background: var(--dsw-alias-bg-layer-2); }
       .noagent-table th[data-w="dot"], .noagent-table td[data-w="dot"] { width: 32px; padding-left: 12px; padding-right: 0; }
-      .noagent-table th[data-w="sched"], .noagent-table td[data-w="sched"] { width: 140px; }
+      .noagent-table th[data-w="sched"], .noagent-table td[data-w="sched"] { width: 168px; }
       .noagent-table th[data-w="time"], .noagent-table td[data-w="time"] { width: 200px; }
       .noagent-table th[data-w="actions"], .noagent-table td[data-w="actions"] { width: 180px; }
 
@@ -786,6 +949,17 @@ window.__ModuleLoader__.load({
       .noagent-hint[data-invalid="true"] { color: var(--dsw-alias-state-error-primary); }
 
       .noagent-empty { margin: 0; padding: 24px; text-align: center; color: var(--dsw-alias-label-tertiary); font-size: 13px; }
+
+      /* 分组标题行：粘在表头下面，滚很长的列表时也知道自己在哪一组。 */
+      .noagent-group-row > td { padding: 0; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+      .noagent-group-row:hover > td { background: transparent; }
+      .noagent-group-head { display: flex; align-items: center; gap: 8px; width: 100%; font: inherit; text-align: left; cursor: pointer; border: 0; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); padding: 6px 12px; }
+      .noagent-group-head:hover { background: var(--dsw-alias-interactive-bg-hover); }
+      .noagent-group-head:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-brand-primary)); outline-offset: -2px; }
+      .noagent-group-caret { width: 10px; flex: 0 0 auto; color: var(--dsw-alias-label-tertiary); font-size: 10px; }
+      .noagent-group-name { font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
+      .noagent-group-count { color: var(--dsw-alias-label-tertiary); font-size: 11px; }
+      .noagent-group-head .noagent-badge { margin-left: auto; }
 
       .noagent-drawer-mask { position: fixed; inset: 0; z-index: 1000; display: flex; justify-content: flex-end; background: var(--dsw-alias-bg-mask-2, transparent); }
       .noagent-drawer { width: min(760px, 92vw); height: 100%; display: flex; flex-direction: column; background: var(--dsw-alias-bg-layer-1); border-left: 1px solid var(--dsw-alias-border-l1); box-shadow: var(--dsw-shadow-lv3, none); }
@@ -1165,7 +1339,7 @@ window.__ModuleLoader__.load({
             h(Switch, {
               checked: job.enabled,
               disabled: busy,
-              label: job.enabled ? t('disabled') : t('enabled'),
+              label: job.enabled ? t('enabled') : t('disabled'),
               onChange: () => {
                 void run(() => actions.toggle(job.id, !job.enabled), null, t('toggleFailed'))
               },
@@ -1203,10 +1377,127 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function JobTable({ t, lang, jobs, now, actions, openId, setOpenId, openLog }) {
+    function JobTable({ t, lang, jobs, groups, collapsed, onToggleGroup, now, actions, openId, setOpenId, openLog, compact }) {
+      // groups 为 null 时走原来的平铺渲染；给了 groups 就在表内插入分组标题行，
+      // 标题行同样占满 5 列，所以不会和表体错位。
+      const rowFor = (job) => {
+        const open = openId === job.id
+        const rows = [
+          h(
+            'tr',
+            { key: job.id, 'data-open': open ? 'true' : 'false' },
+            h('td', { 'data-w': 'dot' }, h('span', { className: 'noagent-dot', 'data-state': stateOf(job) })),
+            h(
+              'td',
+              null,
+              h(
+                'div',
+                { className: 'noagent-task' },
+                h(
+                  'div',
+                  { className: 'noagent-task-main' },
+                  h(
+                    'span',
+                    { className: 'noagent-name', title: job.name || job.id },
+                    h('button', {
+                      type: 'button',
+                      className: 'noagent-link',
+                      'aria-expanded': open ? 'true' : 'false',
+                      onClick: () => setOpenId(open ? null : job.id),
+                    }, job.name || job.id),
+                    job.enabled
+                      ? null
+                      : h('span', { className: 'noagent-badge', 'data-tone': 'off', style: { marginLeft: 6 } }, t('disabled')),
+                  ),
+                  h('span', { className: 'noagent-meta noagent-mono', title: job.command || '' }, describePayload(job.command)),
+                ),
+              ),
+            ),
+            h('td', { 'data-w': 'sched' }, h(ScheduleCell, { t, lang, job })),
+            h('td', { 'data-w': 'time' }, h(TimingCell, { t, lang, job, now, onPick: openLog })),
+            h(
+              'td',
+              { 'data-w': 'actions' },
+              h(
+                'div',
+                { className: 'noagent-actions' },
+                h(Switch, {
+                  checked: job.enabled,
+                  label: job.enabled ? t('enabled') : t('disabled'),
+                  onChange: () => {
+                    void actions.toggle(job.id, !job.enabled)
+                  },
+                }),
+                h('button', {
+                  type: 'button',
+                  className: 'noagent-button',
+                  'data-primary': 'true',
+                  disabled: job.running,
+                  onClick: () => {
+                    void actions.runNow(job.id)
+                  },
+                }, job.running ? t('running') : t('runNow')),
+                h('button', {
+                  type: 'button',
+                  className: 'noagent-button',
+                  onClick: () => openLog(job, null),
+                }, t('viewLog')),
+                h('button', {
+                  type: 'button',
+                  className: 'noagent-button',
+                  'data-inline': 'true',
+                  onClick: () => setOpenId(open ? null : job.id),
+                }, open ? '▴' : '▾'),
+              ),
+            ),
+          ),
+        ]
+        if (open) {
+          rows.push(
+            h(
+              'tr',
+              { key: `${job.id}-detail`, 'data-detail-row': 'true' },
+              h('td', { colSpan: 5 }, h(JobDetail, { t, lang, job, actions: { ...actions, openLog } })),
+            ),
+          )
+        }
+        return rows
+      }
+
+      const body = groups
+        ? groups.flatMap((group) => {
+            const isCollapsed = collapsed.has(group.key)
+            const head = h(
+              'tr',
+              { key: `group-${group.key}`, className: 'noagent-group-row' },
+              h(
+                'td',
+                { colSpan: 5 },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'noagent-group-head',
+                    'aria-expanded': isCollapsed ? 'false' : 'true',
+                    onClick: () => onToggleGroup(group.key),
+                  },
+                  h('span', { className: 'noagent-group-caret' }, isCollapsed ? '▸' : '▾'),
+                  h('span', { className: 'noagent-group-name' }, group.label),
+                  h('span', { className: 'noagent-group-count' }, t('groupCount', { n: group.jobs.length })),
+                  group.alertCount > 0
+                    ? h('span', { className: 'noagent-badge', 'data-tone': 'err' },
+                        t('groupAlerts', { n: group.alertCount }))
+                    : null,
+                ),
+              ),
+            )
+            return isCollapsed ? [head] : [head, ...group.jobs.flatMap(rowFor)]
+          })
+        : jobs.flatMap(rowFor)
+
       return h(
         'div',
-        { className: 'noagent-table-wrap' },
+        { className: 'noagent-table-wrap', 'data-compact': compact ? 'true' : 'false' },
         h(
           'table',
           { className: 'noagent-table' },
@@ -1223,93 +1514,7 @@ window.__ModuleLoader__.load({
               h('th', { 'data-w': 'actions' }, t('colActions')),
             ),
           ),
-          h(
-            'tbody',
-            null,
-            jobs.map((job) => {
-              const open = openId === job.id
-              const rows = [
-                h(
-                  'tr',
-                  { key: job.id, 'data-open': open ? 'true' : 'false' },
-                  h('td', { 'data-w': 'dot' }, h('span', { className: 'noagent-dot', 'data-state': stateOf(job) })),
-                  h(
-                    'td',
-                    null,
-                    h(
-                      'div',
-                      { className: 'noagent-task' },
-                      h(
-                        'div',
-                        { className: 'noagent-task-main' },
-                        h(
-                          'span',
-                          { className: 'noagent-name', title: job.name || job.id },
-                          h('button', {
-                            type: 'button',
-                            className: 'noagent-link',
-                            'aria-expanded': open ? 'true' : 'false',
-                            onClick: () => setOpenId(open ? null : job.id),
-                          }, job.name || job.id),
-                          job.enabled
-                            ? null
-                            : h('span', { className: 'noagent-badge', 'data-tone': 'off', style: { marginLeft: 6 } }, t('disabled')),
-                        ),
-                        h('span', { className: 'noagent-meta noagent-mono', title: job.command || '' }, shortenCommand(job.command)),
-                      ),
-                    ),
-                  ),
-                  h('td', { 'data-w': 'sched' }, h(ScheduleCell, { t, lang, job })),
-                  h('td', { 'data-w': 'time' }, h(TimingCell, { t, lang, job, now, onPick: openLog })),
-                  h(
-                    'td',
-                    { 'data-w': 'actions' },
-                    h(
-                      'div',
-                      { className: 'noagent-actions' },
-                      h(Switch, {
-                        checked: job.enabled,
-                        label: job.enabled ? t('disabled') : t('enabled'),
-                        onChange: () => {
-                          void actions.toggle(job.id, !job.enabled)
-                        },
-                      }),
-                      h('button', {
-                        type: 'button',
-                        className: 'noagent-button',
-                        'data-primary': 'true',
-                        disabled: job.running,
-                        onClick: () => {
-                          void actions.runNow(job.id)
-                        },
-                      }, job.running ? t('running') : t('runNow')),
-                      h('button', {
-                        type: 'button',
-                        className: 'noagent-button',
-                        onClick: () => openLog(job, null),
-                      }, t('viewLog')),
-                      h('button', {
-                        type: 'button',
-                        className: 'noagent-button',
-                        'data-inline': 'true',
-                        onClick: () => setOpenId(open ? null : job.id),
-                      }, open ? '▴' : '▾'),
-                    ),
-                  ),
-                ),
-              ]
-              if (open) {
-                rows.push(
-                  h(
-                    'tr',
-                    { key: `${job.id}-detail`, 'data-detail-row': 'true' },
-                    h('td', { colSpan: 5 }, h(JobDetail, { t, lang, job, actions: { ...actions, openLog } })),
-                  ),
-                )
-              }
-              return rows
-            }),
-          ),
+          h('tbody', null, body),
         ),
       )
     }
@@ -1395,8 +1600,25 @@ window.__ModuleLoader__.load({
       const actions = props.actions ?? props
       const [filter, setFilter] = React.useState('all')
       const [query, setQuery] = React.useState('')
+      const [category, setCategory] = React.useState('')
+      const [sort, setSort] = React.useState('attention')
+      const [page, setPage] = React.useState(1)
+      const [pageSize, setPageSize] = React.useState(15)
+      const [compact, setCompact] = React.useState(true)
       const [openId, setOpenId] = React.useState(null)
       const [logTarget, setLogTarget] = React.useState(null)
+      // 默认按分类分组：任务多到 40+ 之后，平铺一张表找不到东西。
+      const [grouped, setGrouped] = React.useState(false)
+      // 折叠状态默认全展开；只记被收起的 key，新增分组自动是展开的。
+      const [collapsed, setCollapsed] = React.useState(() => new Set())
+      const toggleGroup = (key) => {
+        setCollapsed((prev) => {
+          const next = new Set(prev)
+          if (next.has(key)) next.delete(key)
+          else next.add(key)
+          return next
+        })
+      }
 
       // 空态 / 错误态也走同一个滚动区，保证任何状态下结构一致。
       const only = (text) => h(React.Fragment, null, h('p', { className: 'noagent-empty' }, text))
@@ -1405,12 +1627,26 @@ window.__ModuleLoader__.load({
       if (status.jobs.length === 0) return only(t('empty'))
 
       const now = status.now ?? Date.now()
-      const visible = filterJobs(status.jobs, filter, query)
+      const visible = sortJobs(filterJobs(status.jobs, filter, query, category), sort)
+      const allGroups = buildGroups(status.jobs, t)
+      const matchedGroups = grouped ? buildGroups(visible, t) : null
+      const ordered = matchedGroups ? matchedGroups.flatMap((group) => group.jobs) : visible
+      const pagination = paginateJobs(ordered, page, pageSize)
+      const pageIds = new Set(pagination.jobs.map((job) => job.id))
+      const groups = matchedGroups
+        ? matchedGroups.map((group) => {
+            const jobs = group.jobs.filter((job) => pageIds.has(job.id))
+            return { ...group, jobs, alertCount: jobs.filter((job) => job.enabled && job.last?.ok === false).length }
+          }).filter((group) => group.jobs.length)
+        : null
+      const change = (setter, value) => { setter(value); setPage(1); setCollapsed(new Set()) }
+      const reset = () => { setFilter('all'); setQuery(''); setCategory(''); setPage(1); setCollapsed(new Set()) }
       const filters = [
         { key: 'all', label: t('filterAll') },
         { key: 'enabled', label: t('filterEnabled') },
         { key: 'disabled', label: t('filterDisabled') },
         { key: 'failing', label: t('filterFailing') },
+        { key: 'running', label: t('running') },
       ]
       const openLog = (job, run) => setLogTarget({ job, run, loadLog: actions.loadLog })
 
@@ -1422,8 +1658,18 @@ window.__ModuleLoader__.load({
           jobs: status.jobs,
           now,
           filter,
-          onPickFilter: (key) => setFilter(key === filter ? 'all' : key),
+          onPickFilter: (key) => { reset(); setFilter(key === filter ? 'all' : key) },
         }),
+        h('div', { className: 'noagent-controls' },
+        h('nav', { className: 'noagent-categories', 'aria-label': t('categories') },
+          [{ key: '', label: t('allCategories'), jobs: status.jobs }, ...allGroups].map((group) =>
+            h('button', {
+              key: group.key, type: 'button', className: 'noagent-button noagent-category',
+              'aria-pressed': category === group.key ? 'true' : 'false',
+              onClick: () => change(setCategory, group.key),
+            }, group.label, h('span', { className: 'noagent-category-count' }, String(group.jobs.length))),
+          ),
+        ),
         h(
           'div',
           { className: 'noagent-toolbar' },
@@ -1433,7 +1679,7 @@ window.__ModuleLoader__.load({
             placeholder: t('searchPlaceholder'),
             'aria-label': t('searchPlaceholder'),
             value: query,
-            onChange: (event) => setQuery(event.target.value),
+            onChange: (event) => change(setQuery, event.target.value),
           }),
           h(
             'div',
@@ -1443,11 +1689,27 @@ window.__ModuleLoader__.load({
                 key: item.key,
                 type: 'button',
                 'data-on': filter === item.key ? 'true' : 'false',
-                onClick: () => setFilter(item.key),
+                'aria-pressed': filter === item.key ? 'true' : 'false',
+                onClick: () => change(setFilter, item.key),
               }, item.label),
             ),
           ),
-          h('span', { className: 'noagent-meta', title: status.jobsFile }, status.jobsFile || ''),
+          h('select', {
+            className: 'noagent-input noagent-select', 'aria-label': t('sortLabel'),
+            value: sort, onChange: (event) => change(setSort, event.target.value),
+          }, ['attention', 'name', 'next', 'recent'].map((key) =>
+            h('option', { key, value: key }, t({ attention: 'sortAttention', name: 'sortName', next: 'sortNext', recent: 'sortRecent' }[key])))),
+          h('button', {
+            type: 'button',
+            className: 'noagent-button',
+            'data-primary': grouped ? 'true' : 'false',
+            'aria-pressed': grouped ? 'true' : 'false',
+            onClick: () => change(setGrouped, !grouped),
+          }, t('groupBy')),
+          h('button', {
+            type: 'button', className: 'noagent-button', 'aria-pressed': compact ? 'true' : 'false',
+            onClick: () => setCompact((value) => !value),
+          }, t('compact')),
           h('button', {
             type: 'button',
             className: 'noagent-button',
@@ -1456,18 +1718,45 @@ window.__ModuleLoader__.load({
             },
           }, t('refresh')),
         ),
+        h('div', { className: 'noagent-results' },
+          h('span', { className: 'noagent-meta', role: 'status' }, t('resultCount', { n: visible.length, total: status.jobs.length })),
+          grouped ? h('button', { type: 'button', className: 'noagent-button',
+            onClick: () => setCollapsed(new Set(matchedGroups.map((group) => group.key))),
+          }, t('collapseAll')) : null,
+          grouped ? h('button', { type: 'button', className: 'noagent-button',
+            onClick: () => setCollapsed(new Set()),
+          }, t('expandAll')) : null,
+          query || category || filter !== 'all'
+            ? h('button', { type: 'button', className: 'noagent-button', onClick: reset }, t('resetFilters')) : null,
+        )),
         visible.length === 0
           ? h('div', { className: 'noagent-table-wrap' }, h('p', { className: 'noagent-empty' }, t('emptyFiltered')))
           : h(JobTable, {
               t,
               lang,
-              jobs: visible,
+              jobs: pagination.jobs,
+              compact,
+              groups,
+              collapsed,
+              onToggleGroup: toggleGroup,
               now,
               actions,
               openId,
               setOpenId,
               openLog,
             }),
+        h('div', { className: 'noagent-pagination', 'aria-label': t('pageSize') },
+          h('span', { className: 'noagent-meta', role: 'status' }, t('pageInfo', pagination)),
+          h('select', { className: 'noagent-input noagent-select', 'aria-label': t('pageSize'),
+            value: pageSize, onChange: (event) => change(setPageSize, Number(event.target.value)),
+          }, [15, 30, 50].map((size) => h('option', { key: size, value: size }, String(size)))),
+          h('button', { type: 'button', className: 'noagent-button', disabled: pagination.page <= 1,
+            onClick: () => setPage(pagination.page - 1),
+          }, t('previousPage')),
+          h('button', { type: 'button', className: 'noagent-button', disabled: pagination.page >= pagination.pages,
+            onClick: () => setPage(pagination.page + 1),
+          }, t('nextPage')),
+        ),
         logTarget ? h(LogDrawer, { t, lang, target: logTarget, onClose: () => setLogTarget(null) }) : null,
       )
     }
@@ -1515,9 +1804,13 @@ window.__ModuleLoader__.load({
         humanDuration,
         summarize,
         filterJobs,
+        sortJobs,
+        paginateJobs,
+        buildGroups,
         validateForm,
         stateOf,
         shortenCommand,
+        describePayload,
       },
       apply(ctx) {
         const localeApi = ctx.locale
