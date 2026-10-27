@@ -220,6 +220,15 @@ test('apply：UI 路由与 agent 工具共用同一份操作实现', async () =>
   assert.equal(missingBody.ok, false)
   assert.equal(missingBody.error.code, 'job_not_found')
 
+  // 上一轮的 run 是 wait:false，日志文件名带毫秒戳、在跑完之后才落盘。
+  // 不等它写完就进第 4 步，两次读取就可能分别看到这次和上一次的日志（file 差 1ms）。
+  const runLogDir = path.join(dir, 'runs', 'unit')
+  for (let i = 0; i < 1000; i += 1) {
+    const files = await fs.readdir(runLogDir).catch(() => [])
+    if (files.filter((name) => name.endsWith('.log')).length >= 2) break
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+
   // 4) log：路由与工具读到同一份日志
   const logResponse = await postRpc(routes[0], { op: 'log', id: 'unit' })
   const logBody = await logResponse.json()

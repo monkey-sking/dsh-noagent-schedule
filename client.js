@@ -20,6 +20,317 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
 
+function createUiKit(React) {
+  const h = React.createElement
+  const { useState, useEffect, useRef, useCallback } = React
+
+  // -------------------------------------------------------------------------
+  // CSS  (mirrors primitives' *.module.css, class names renamed to dp-*)
+  // -------------------------------------------------------------------------
+  const CSS = `
+/* ===== dsh-panel ui-kit v1 (copied from dsh-client-ui-primitives) ===== */
+
+.dp-btn {
+  box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+  gap: 4px; border: none; border-radius: var(--dsw-radius-md); cursor: pointer;
+  font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-primary);
+  background: transparent; padding: 0 14px;
+}
+.dp-btn:disabled { cursor: not-allowed; opacity: 0.4; }
+.dp-btn-md { height: 36px; }
+.dp-btn-sm { height: 28px; font-size: 12px; line-height: 18px; padding: 0 10px; border-radius: var(--dsw-radius-sm); }
+.dp-btn-primary { background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); }
+.dp-btn-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
+.dp-btn-ghost:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.dp-btn-ghost:active:not(:disabled) { background: var(--dsw-alias-interactive-bg-active); }
+.dp-btn-outline { border: 0.5px solid var(--dsw-alias-border-l3); background: transparent; }
+.dp-btn-outline:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.dp-btn-toolbar { background: var(--dsw-alias-button-tool-bar-fill); }
+.dp-btn-toolbar:hover:not(:disabled) { background: var(--dsw-alias-button-tool-bar-hover); }
+.dp-btn-danger { background: var(--dsw-alias-state-error-primary); color: var(--dsw-alias-label-primary-foreground); }
+.dp-btn-danger:hover:not(:disabled) { filter: brightness(0.92); }
+.dp-btn-icon { display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center; }
+.dp-btn:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; }
+
+/* Tag — capsule, tone varies */
+.dp-tag {
+  display: inline-flex; align-items: center; border-radius: 999px; padding: 1px 8px;
+  font-size: 11px; line-height: 17px; font-weight: 500; white-space: nowrap;
+}
+.dp-tag[data-tone='outline'] { border: 0.5px solid var(--dsw-alias-border-l4); color: var(--dsw-alias-label-tertiary); }
+.dp-tag[data-tone='solid'] { background: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-layer-3); }
+.dp-tag[data-tone='neutral'] { background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); }
+.dp-tag[data-tone='quiet'] { color: var(--dsw-alias-label-tertiary); }
+.dp-tag[data-tone='success'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent); color: var(--dsw-alias-state-success-primary); }
+.dp-tag[data-tone='info'] { background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent); color: var(--dsw-alias-state-business-primary); }
+.dp-tag[data-tone='warning'] { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent); color: var(--dsw-alias-state-warn-primary); }
+.dp-tag[data-tone='danger'] { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent); color: var(--dsw-alias-state-error-primary); }
+
+/* Pill — filter chip */
+.dp-pill {
+  display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px;
+  border: none; border-radius: 999px; font-size: 12px; line-height: 18px;
+  color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2);
+}
+.dp-pill-interactive { cursor: pointer; }
+.dp-pill-interactive:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.dp-pill-active { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-button-ghost-active-fill); box-shadow: inset 0 0 0 1px var(--dsw-alias-button-ghost-active-border); }
+
+/* StateDot */
+.dp-dot { position: relative; display: inline-block; flex: none; width: 10px; height: 10px; }
+.dp-dot::after { content: ''; position: absolute; inset: 20%; border-radius: 50%; background: currentColor; }
+.dp-dot[data-state='done'] { color: var(--dsw-alias-state-success-primary); }
+.dp-dot[data-state='warning'] { color: var(--dsw-alias-state-warn-primary); }
+.dp-dot[data-state='error'] { color: var(--dsw-alias-state-error-primary); }
+.dp-dot[data-state='idle'] { color: var(--dsw-alias-state-idle-primary); }
+.dp-dot[data-state='info'] { color: var(--dsw-alias-state-business-primary); }
+.dp-spinner { flex: none; color: var(--dsw-alias-label-tertiary); }
+.dp-spinner-motion { transform-origin: center; animation: dp-spin 1.5s linear infinite; }
+.dp-spinner-track, .dp-spinner-arc { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.dp-spinner-track { opacity: 0.25; }
+.dp-spinner-arc { stroke-dasharray: 12 150; animation: dp-dash 1.5s ease-in-out infinite; }
+@keyframes dp-spin { to { transform: rotate(360deg); } }
+@keyframes dp-dash { 0% { stroke-dasharray: 12 150; stroke-dashoffset: 0; } 50% { stroke-dasharray: 24 150; stroke-dashoffset: -6; } 100% { stroke-dasharray: 12 150; stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) { .dp-spinner-motion, .dp-spinner-arc { animation: none; } .dp-spinner-arc { stroke-dasharray: 18 150; stroke-dashoffset: -3; } }
+
+/* SegmentedTabs */
+.dp-tabs { position: relative; display: inline-grid; grid-auto-flow: column; grid-auto-columns: max-content; width: fit-content; max-width: 100%; padding: 4px; border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-module-platform); }
+    .dp-tabs-full { display: grid; grid-auto-columns: 1fr; }
+.dp-tabs-indicator { position: absolute; top: 4px; bottom: 4px; left: 4px; box-sizing: border-box; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-3); transition: transform 180ms ease, width 180ms ease; pointer-events: none; }
+.dp-tab { position: relative; justify-content: center; height: 34px; padding: 0 12px; border-radius: var(--dsw-radius-md); border: none; background: transparent; color: var(--dsw-alias-label-secondary); transition: color 180ms ease; cursor: pointer; font: inherit; }
+.dp-tab:hover, .dp-tab[aria-selected='true'] { background: transparent; color: var(--dsw-alias-label-primary); }
+.dp-tab[aria-selected='true'] { font-weight: 600; }
+.dp-tab:focus-visible { outline: none; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px; }
+@media (prefers-reduced-motion: reduce) { .dp-tabs-indicator, .dp-tab { transition: none; } }
+
+/* SearchInput */
+.dp-input-wrap { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-1); }
+.dp-input-wrap:focus-within { border-color: var(--dsw-alias-state-business-primary); }
+.dp-input-icon { display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center; color: var(--dsw-alias-label-tertiary); }
+.dp-input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-primary); }
+.dp-input::placeholder { color: var(--dsw-alias-label-dimmed); }
+
+/* Switch */
+.dp-switch { box-sizing: border-box; position: relative; flex: 0 0 auto; width: 36px; height: 20px; padding: 2px; border: 0; border-radius: 999px; background: var(--dsw-alias-border-l3); cursor: pointer; }
+.dp-switch[aria-checked='true'] { background: var(--dsw-alias-brand-primary); }
+.dp-switch:disabled { cursor: default; opacity: 0.5; }
+.dp-switch:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; }
+.dp-switch-thumb { display: block; width: 16px; height: 16px; border-radius: 50%; background: var(--dsw-alias-label-primary-foreground); transition: transform 120ms ease; }
+.dp-switch[aria-checked='false'] .dp-switch-thumb { background: var(--dsw-alias-switch-thumb); }
+.dp-switch[aria-checked='true'] .dp-switch-thumb { transform: translateX(16px); }
+
+/* Modal */
+.dp-modal-root { pointer-events: auto; position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: max(24px, var(--dsh-frame-overlay-top, 24px)) 24px; }
+.dp-modal-mask { position: absolute; inset: var(--dsh-frame-chrome-top, 0px) 0 0; backdrop-filter: var(--dsw-mask-blur); }
+.dp-modal-mask::after { content: ''; position: absolute; inset: 0; background: var(--dsw-alias-bg-mask-1); animation: dp-modal-enter var(--ds-transition-duration, 160ms) var(--ds-ease-in-out, ease); }
+.dp-modal-dialog { box-sizing: border-box; position: relative; z-index: 1; display: flex; flex-direction: column; gap: 20px; width: min(560px, 100%); max-height: 100%; padding: 0 0 24px; overflow: hidden; border: 0; border-radius: var(--dsw-radius-panel); background: var(--dsw-alias-bg-layer-2); box-shadow: var(--dsw-elevation-prominent); animation: dp-modal-enter var(--ds-transition-duration, 160ms) var(--ds-ease-in-out, ease); }
+.dp-modal-dialog[data-size='sm'] { width: min(380px, 100%); }
+.dp-modal-dialog[data-size='lg'] { width: min(760px, 100%); }
+@keyframes dp-modal-enter { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .dp-modal-mask::after, .dp-modal-dialog { animation: none; } }
+.dp-modal-dialog:focus { outline: none; }
+.dp-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 22px 14px 12px 24px; }
+.dp-modal-title { margin: 0; font-size: 16px; line-height: 24px; font-weight: 500; color: var(--dsw-alias-label-primary); }
+.dp-modal-close { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: none; border-radius: var(--dsw-radius-sm); background: transparent; cursor: pointer; color: var(--dsw-alias-label-secondary); }
+.dp-modal-close:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.dp-modal-description { margin: 0; padding: 0 24px; font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-primary); }
+.dp-modal-body { display: flex; flex-direction: column; min-width: 0; margin-top: 20px; padding: 0 24px; overflow: auto; }
+.dp-modal-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 24px; }
+
+/* Toast */
+.dp-toast { position: fixed; top: 40px; left: 50%; z-index: 1100; pointer-events: none; display: flex; align-items: center; gap: 10px; width: max-content; max-width: min(640px, calc(100vw - 48px)); padding: 12px 16px; border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-toast-bg); color: var(--dsw-alias-toast-label); font-size: 14px; line-height: 22px; box-shadow: var(--dsw-shadow-lv3); transform: translateX(-50%); animation: dp-toast-in 160ms ease-out, dp-toast-fade 1000ms ease var(--dp-toast-hold, 3000ms) forwards; }
+.dp-toast-icon { display: grid; place-items: center; flex: none; color: var(--dsw-alias-state-warn-label); }
+.dp-toast-icon[data-tone='success'] { color: var(--dsw-alias-state-success-primary); }
+.dp-toast-icon[data-tone='info'] { color: var(--dsw-alias-state-business-primary); }
+.dp-toast-text { min-width: 0; }
+@keyframes dp-toast-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes dp-toast-fade { to { opacity: 0; visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) { .dp-toast { animation: dp-toast-fade 1000ms ease var(--dp-toast-hold, 3000ms) forwards; } }
+
+/* Layout helpers (not from primitives; pure token layout) */
+.dp-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 40px 16px; color: var(--dsw-alias-label-tertiary); font-size: 13px; text-align: center; }
+.dp-statcard { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-2); border: 0.5px solid var(--dsw-alias-border-l3); }
+.dp-statcard-label { font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary); }
+.dp-statcard-value { font-size: 20px; line-height: 28px; font-weight: 600; color: var(--dsw-alias-label-primary); }
+.dp-statcard-value[data-tone='success'] { color: var(--dsw-alias-state-success-primary); }
+.dp-statcard-value[data-tone='warning'] { color: var(--dsw-alias-state-warn-primary); }
+.dp-statcard-value[data-tone='danger'] { color: var(--dsw-alias-state-error-primary); }
+.dp-section-title { margin: 0; font-size: 13px; line-height: 20px; font-weight: 600; color: var(--dsw-alias-label-secondary); letter-spacing: 0.01em; }
+`
+
+  // -------------------------------------------------------------------------
+  // Icons (inline SVG, 16x16, currentColor)
+  // -------------------------------------------------------------------------
+  const svg = (pathD, opts = {}) =>
+    h('svg', { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none',
+      stroke: 'currentColor', 'stroke-width': opts.w || 1.5,
+      'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+      'aria-hidden': true, ...opts.extra },
+      h('path', { d: pathD }))
+  const IconSearch = () => svg('M7 13A6 6 0 1 0 7 1a6 6 0 0 0 0 12ZM11.5 11.5 14 14')
+  const IconClose = () => svg('M4 4l8 8M12 4l-8 8')
+  const IconWarn = () => svg('M8 1.5 15 14H1ZM8 6v3M8 11.5v.5')
+  const IconInfo = () => svg('M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM8 7v3.5M8 4.5v.5')
+  const IconCheck = () => svg('M3 8.5 6.5 12 13 4')
+
+  // -------------------------------------------------------------------------
+  // Atoms
+  // -------------------------------------------------------------------------
+  function Button({ variant = 'ghost', size = 'md', icon, type = 'button', children, ...rest }) {
+    return h('button', { type, className: `dp-btn dp-btn-${variant} dp-btn-${size}`, ...rest },
+      icon != null && h('span', { className: 'dp-btn-icon' }, icon),
+      children)
+  }
+
+  function Tag({ tone = 'outline', children, ...rest }) {
+    return h('span', { className: 'dp-tag', 'data-tone': tone, ...rest }, children)
+  }
+
+  function Pill({ active = false, onClick, type = 'button', children }) {
+    const cls = `dp-pill${onClick ? ' dp-pill-interactive' : ''}${active ? ' dp-pill-active' : ''}`
+    return h('button', { type, className: cls, onClick }, children)
+  }
+
+  function StateDot({ state = 'idle' }) {
+    if (state === 'ongoing') {
+      return h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, className: 'dp-spinner', 'aria-hidden': true },
+        h('g', { className: 'dp-spinner-motion' },
+          h('circle', { className: 'dp-spinner-track', cx: 12, cy: 12, r: 9 }),
+          h('circle', { className: 'dp-spinner-arc', cx: 12, cy: 12, r: 9 })))
+    }
+    return h('span', { className: 'dp-dot', 'data-state': state, 'aria-hidden': true })
+  }
+
+  function SegmentedTabs({ tabs, value, onChange, ariaLabel }) {
+    const ref = useRef(null)
+    const [ind, setInd] = useState({ x: 0, w: 0 })
+
+    useEffect(() => {
+      const el = ref.current
+      if (!el) return
+      const measure = () => {
+        const sel = el.querySelector('.dp-tab[aria-selected="true"]')
+        if (sel) setInd({ x: sel.offsetLeft, w: sel.offsetWidth })
+      }
+      measure()
+      const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null
+      if (ro) ro.observe(el)
+      return () => { if (ro) ro.disconnect() }
+    }, [value, tabs])
+
+    return h('div', { className: 'dp-tabs', role: 'tablist', 'aria-label': ariaLabel, ref },
+      h('div', { className: 'dp-tabs-indicator',
+        style: { transform: `translateX(${ind.x - 4}px)`, width: ind.w ? `${ind.w}px` : undefined } }),
+      tabs.map(t => h('button', {
+        key: t.value, role: 'tab', type: 'button',
+        className: 'dp-tab', 'aria-selected': t.value === value,
+        onClick: () => onChange(t.value),
+      }, t.label)))
+  }
+
+  function SearchInput({ value, onChange, placeholder, ...rest }) {
+    return h('div', { className: 'dp-input-wrap' },
+      h('span', { className: 'dp-input-icon' }, h(IconSearch)),
+      h('input', {
+        className: 'dp-input', type: 'text', value, placeholder,
+        onChange: e => onChange(e.target.value), ...rest,
+      }))
+  }
+
+  function Switch({ checked, onChange, disabled, 'aria-label': ariaLabel }) {
+    return h('button', {
+      type: 'button', role: 'switch', className: 'dp-switch',
+      'aria-checked': checked ? 'true' : 'false', 'aria-label': ariaLabel,
+      disabled, onClick: () => { if (!disabled) onChange(!checked) },
+    }, h('span', { className: 'dp-switch-thumb' }))
+  }
+
+  // Modal — focus+Esc+outside-click+restore, copied behavior from primitives
+  function Modal({ open, title, onClose, children, footer, description, size = 'md' }) {
+    const dialogRef = useRef(null)
+    const prevFocus = useRef(null)
+
+    useEffect(() => {
+      if (!open) return
+      prevFocus.current = document.activeElement
+      const el = dialogRef.current
+      if (el) {
+        const f = el.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
+        ;(f || el).focus?.()
+      }
+      const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
+      document.addEventListener('keydown', onKey, true)
+      return () => {
+        document.removeEventListener('keydown', onKey, true)
+        try { prevFocus.current?.focus?.() } catch { /* ignore */ }
+      }
+    }, [open, onClose])
+
+    if (!open) return null
+    const closeOnBackdrop = (e) => { if (e.target === e.currentTarget) onClose() }
+    return h('div', { className: 'dp-modal-root', onPointerDown: closeOnBackdrop },
+      h('div', { className: 'dp-modal-mask', onPointerDown: closeOnBackdrop }),
+      h('div', {
+        className: 'dp-modal-dialog', 'data-size': size, role: 'dialog', 'aria-modal': 'true',
+        tabIndex: -1, ref: dialogRef,
+      },
+        title && h('div', { className: 'dp-modal-header' },
+          h('h2', { className: 'dp-modal-title' }, title),
+          h('button', { type: 'button', className: 'dp-modal-close', 'aria-label': '关闭', onClick: onClose },
+            h(IconClose))),
+        description && h('p', { className: 'dp-modal-description' }, description),
+        h('div', { className: 'dp-modal-body' }, children),
+        footer && h('div', { className: 'dp-modal-footer' }, footer),
+      ))
+  }
+
+  // useToast — returns { show, node }; render `node` once at the panel root.
+  function useToast() {
+    const [items, setItems] = useState([])
+    const idc = useRef(0)
+    const show = useCallback((text, opts = {}) => {
+      const id = ++idc.current
+      const tone = opts.tone || 'info'
+      const hold = opts.hold || 3000
+      setItems(xs => [...xs, { id, text, tone, hold }])
+      setTimeout(() => setItems(xs => xs.filter(x => x.id !== id)), hold + 1100)
+      return id
+    }, [])
+    const dismiss = useCallback((id) => setItems(xs => xs.filter(x => x.id !== id)), [])
+    const iconFor = (tone) => tone === 'success' ? h(IconCheck) : tone === 'info' ? h(IconInfo) : h(IconWarn)
+    const node = items.map(it =>
+      h('div', { key: it.id, className: 'dp-toast', style: { '--dp-toast-hold': `${it.hold}ms` } },
+        h('span', { className: 'dp-toast-icon', 'data-tone': it.tone }, iconFor(it.tone)),
+        h('span', { className: 'dp-toast-text' }, it.text)))
+    return { show, dismiss, node }
+  }
+
+  function EmptyState({ icon, children }) {
+    return h('div', { className: 'dp-empty' }, icon != null ? h('span', { className: 'dp-empty-icon' }, icon) : null, children)
+  }
+
+  function StatCard({ label, value, tone }) {
+    const valueProps = { className: 'dp-statcard-value' }
+    if (tone) valueProps['data-tone'] = tone
+    return h('div', { className: 'dp-statcard' },
+      h('span', { className: 'dp-statcard-label' }, label),
+      h('span', valueProps, value))
+  }
+
+  function SectionTitle({ children, ...rest }) {
+    return h('h3', { className: 'dp-section-title', ...rest }, children)
+  }
+
+  return {
+    CSS,
+    Button, Tag, Pill, StateDot, SegmentedTabs, SearchInput, Switch,
+    Modal, useToast, EmptyState, StatCard, SectionTitle,
+    icons: { IconSearch, IconClose, IconWarn, IconInfo, IconCheck },
+  }
+}
+
+    const UI = createUiKit(React)
+
     /** 与 Host 的 RPC_PATH 对应；相对路径让 mount 前缀自动生效。 */
     const ROUTE = 'api/noagent.rpc'
     /** Client locale 命名空间。 */
@@ -830,11 +1141,11 @@ window.__ModuleLoader__.load({
       .noagent-intro { margin: 4px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; }
 
       .noagent-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; flex: 0 0 auto; }
-      .noagent-stat { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 14px; border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-layer-1); color: inherit; font: inherit; text-align: left; cursor: default; }
+      .noagent-stat { display: flex; flex: 1 1 0; min-width: 0; flex-direction: column; align-items: flex-start; gap: 2px; padding: 12px 14px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-2); color: inherit; font: inherit; text-align: left; cursor: default; }
       .noagent-stat[data-clickable="true"] { cursor: pointer; }
       .noagent-stat[data-clickable="true"]:hover { background: var(--dsw-alias-interactive-bg-hover); }
-      .noagent-stat-label { color: var(--dsw-alias-label-tertiary); font-size: 12px; }
-      .noagent-stat-value { font-size: 22px; font-weight: 600; line-height: 28px; font-variant-numeric: tabular-nums; }
+      .noagent-stat-label { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }
+      .noagent-stat-value { font-size: 20px; font-weight: 600; line-height: 28px; font-variant-numeric: tabular-nums; }
       .noagent-stat-value[data-tone="error"] { color: var(--dsw-alias-state-error-primary); }
       .noagent-stat-value[data-tone="success"] { color: var(--dsw-alias-state-success-primary); }
       .noagent-stat[data-active="true"] { border-color: var(--dsw-alias-brand-primary); }
@@ -861,9 +1172,8 @@ window.__ModuleLoader__.load({
         .noagent-controls { position: static; }
         .noagent-pagination > :first-child { flex-basis: 100%; }
       }
-      .noagent-search { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: var(--dsw-radius-md); border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); flex: 1 1 220px; min-width: 160px; }
-      .noagent-search::placeholder { color: var(--dsw-alias-label-tertiary); }
-      .noagent-search:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-brand-primary)); outline-offset: 1px; }
+      .noagent-search { flex: 1 1 220px; min-width: 160px; }
+      .noagent-toolbar .dp-input-wrap { flex: 1 1 220px; min-width: 160px; }
       .noagent-seg { display: inline-flex; border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md); overflow: hidden; }
       .noagent-seg > button { font: inherit; font-size: 12px; cursor: pointer; padding: 4px 10px; border: 0; background: transparent; color: var(--dsw-alias-label-secondary); }
       .noagent-seg > button + button { border-left: 1px solid var(--dsw-alias-border-l2); }
@@ -911,14 +1221,16 @@ window.__ModuleLoader__.load({
       .noagent-norun { color: var(--dsw-alias-label-tertiary); font-size: 12px; }
 
       .noagent-actions { display: flex; gap: 6px; align-items: center; }
-      .noagent-button { font: inherit; font-size: 12px; cursor: pointer; padding: 3px 9px; border-radius: var(--dsw-radius-md); border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-primary); white-space: nowrap; }
-      .noagent-button:hover { background: var(--dsw-alias-interactive-bg-hover); }
-      .noagent-button:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-brand-primary)); outline-offset: 2px; }
-      .noagent-button[data-primary="true"] { border-color: transparent; background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-inverted); }
-      .noagent-button[data-primary="true"]:hover { background: var(--dsw-alias-button-primary-hover); }
+      .noagent-button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 28px; padding: 0 10px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm); background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 12px; line-height: 18px; white-space: nowrap; cursor: pointer; }
+      .noagent-button:hover:not([disabled]) { background: var(--dsw-alias-interactive-bg-hover); }
+      .noagent-button:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; }
+      .noagent-button[data-primary="true"] { border-color: transparent; background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); }
+      .noagent-button[data-primary="true"]:hover:not([disabled]) { background: var(--dsw-alias-button-primary-hover); }
       .noagent-button[data-danger="true"] { color: var(--dsw-alias-state-error-primary); border-color: var(--dsw-alias-state-error-primary); }
-      .noagent-button[data-inline="true"] { border: 0; padding: 2px 4px; color: var(--dsw-alias-label-secondary); }
-      .noagent-button[disabled] { cursor: default; opacity: 0.55; }
+      .noagent-button[data-inline="true"] { border: 0; padding: 0 4px; color: var(--dsw-alias-label-secondary); }
+      .noagent-button[disabled] { cursor: not-allowed; opacity: 0.4; }
+      .noagent-table .noagent-button[data-primary="true"] { background: transparent; border-color: var(--dsw-alias-border-l3); color: var(--dsw-alias-label-primary); }
+      .noagent-table .noagent-button[data-primary="true"]:hover:not([disabled]) { background: var(--dsw-alias-interactive-bg-hover); }
 
       .noagent-switch { position: relative; display: inline-block; width: 30px; height: 18px; flex: 0 0 auto; border: 0; padding: 0; cursor: pointer; border-radius: 9px; background: var(--dsw-alias-border-l3, var(--dsw-alias-border-l2)); }
       .noagent-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--dsw-alias-bg-base); transition: transform 120ms ease; }
@@ -939,7 +1251,11 @@ window.__ModuleLoader__.load({
       .noagent-form { display: flex; flex-direction: column; gap: 10px; }
       .noagent-form-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; align-items: start; }
       .noagent-form-label { color: var(--dsw-alias-label-secondary); font-size: 12px; padding-top: 5px; }
-      .noagent-input { font: inherit; font-size: 13px; padding: 4px 8px; width: 100%; box-sizing: border-box; border-radius: var(--dsw-radius-md); border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); }
+      .noagent-input { box-sizing: border-box; font: inherit; font-size: 14px; line-height: 22px; height: 32px; padding: 0 8px; border-radius: var(--dsw-radius-md); border: 0.5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
+      .noagent-input:focus-visible { outline: none; border-color: var(--dsw-alias-state-business-primary); }
+      .noagent-input::placeholder { color: var(--dsw-alias-label-dimmed); }
+      .noagent-input[rows] { height: auto; padding: 6px 8px; line-height: 20px; }
+      .noagent-input[data-invalid="true"] { border-color: var(--dsw-alias-state-error-primary); }
       .noagent-input[data-invalid="true"] { border-color: var(--dsw-alias-state-error-primary); }
       .noagent-input:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-brand-primary)); outline-offset: 1px; }
       textarea.noagent-input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; min-height: 64px; resize: vertical; }
@@ -970,7 +1286,11 @@ window.__ModuleLoader__.load({
     `
 
     function StyleTag() {
-      return h('style', { key: 'noagent-style' }, CSS)
+      return h(
+        React.Fragment,
+        null,
+        h('style', { key: 'noagent-style' }, UI.CSS + '\n' + CSS),
+      )
     }
 
     /** 侧边栏图标：只画图标，点击切换由外壳按 id 处理。 */
@@ -995,17 +1315,14 @@ window.__ModuleLoader__.load({
       )
     }
 
+    const DOT_STATE = { ok: 'done', error: 'error', running: 'ongoing', idle: 'idle' }
+
     function Switch({ checked, disabled, onChange, label }) {
-      return h('button', {
-        type: 'button',
-        role: 'switch',
-        'aria-checked': checked ? 'true' : 'false',
-        'aria-label': label,
-        title: label,
-        className: 'noagent-switch',
-        'data-on': checked ? 'true' : 'false',
+      return h(UI.Switch, {
+        checked,
         disabled: disabled === true,
-        onClick: onChange,
+        'aria-label': label,
+        onChange: () => onChange(),
       })
     }
 
@@ -1070,7 +1387,7 @@ window.__ModuleLoader__.load({
           { className: 'noagent-sched-main', title: job.schedule && job.schedule.kind === 'cron' ? job.schedule.cron : '' },
           schedule.text || '—',
           job.watch
-            ? h('span', { className: 'noagent-badge', style: { marginLeft: 6 }, title: t('watchHint') }, t('watchBadge'))
+            ? h(UI.Tag, { tone: 'info', style: { marginLeft: 6 }, title: t('watchHint') }, t('watchBadge'))
             : null,
         ),
         h(
@@ -1094,7 +1411,7 @@ window.__ModuleLoader__.load({
           : t('disabled')
       const result =
         last && last.ok === false
-          ? h('span', { className: 'noagent-badge', 'data-tone': 'err', style: { marginLeft: 6 } },
+          ? h(UI.Tag, { tone: 'danger', style: { marginLeft: 6 } },
               last.timedOut ? t('timeout') : t('exitCode', { code: last.exitCode === null ? '—' : last.exitCode }))
           : null
       return h(
@@ -1214,18 +1531,14 @@ window.__ModuleLoader__.load({
               value: form.name,
               onChange: (event) => setForm({ ...form, name: event.target.value }),
             })),
-            formRow(t('fieldMode'), h(
-              'div',
-              { className: 'noagent-seg' },
-              ['cron', 'every'].map((key) =>
-                h('button', {
-                  key,
-                  type: 'button',
-                  'data-on': form.mode === key ? 'true' : 'false',
-                  onClick: () => setForm({ ...form, mode: key }),
-                }, key === 'cron' ? t('modeCron') : t('modeEvery')),
-              ),
-            )),
+            formRow(t('fieldMode'), h(UI.SegmentedTabs, {
+              tabs: ['cron', 'every'].map((key) => ({
+                value: key,
+                label: key === 'cron' ? t('modeCron') : t('modeEvery'),
+              })),
+              value: form.mode,
+              onChange: (key) => setForm({ ...form, mode: key }),
+            })),
             form.mode === 'cron'
               ? formRow(
                   t('fieldCron'),
@@ -1386,7 +1699,7 @@ window.__ModuleLoader__.load({
           h(
             'tr',
             { key: job.id, 'data-open': open ? 'true' : 'false' },
-            h('td', { 'data-w': 'dot' }, h('span', { className: 'noagent-dot', 'data-state': stateOf(job) })),
+            h('td', { 'data-w': 'dot' }, h(UI.StateDot, { state: DOT_STATE[stateOf(job)] ?? 'idle' })),
             h(
               'td',
               null,
@@ -1407,7 +1720,7 @@ window.__ModuleLoader__.load({
                     }, job.name || job.id),
                     job.enabled
                       ? null
-                      : h('span', { className: 'noagent-badge', 'data-tone': 'off', style: { marginLeft: 6 } }, t('disabled')),
+                      : h(UI.Tag, { tone: 'warning', style: { marginLeft: 6 } }, t('disabled')),
                   ),
                   h('span', { className: 'noagent-meta noagent-mono', title: job.command || '' }, describePayload(job.command)),
                 ),
@@ -1485,7 +1798,7 @@ window.__ModuleLoader__.load({
                   h('span', { className: 'noagent-group-name' }, group.label),
                   h('span', { className: 'noagent-group-count' }, t('groupCount', { n: group.jobs.length })),
                   group.alertCount > 0
-                    ? h('span', { className: 'noagent-badge', 'data-tone': 'err' },
+                    ? h(UI.Tag, { tone: 'danger' },
                         t('groupAlerts', { n: group.alertCount }))
                     : null,
                 ),
@@ -1621,7 +1934,7 @@ window.__ModuleLoader__.load({
       }
 
       // 空态 / 错误态也走同一个滚动区，保证任何状态下结构一致。
-      const only = (text) => h(React.Fragment, null, h('p', { className: 'noagent-empty' }, text))
+      const only = (text) => h(UI.EmptyState, null, text)
       if (status.kind === 'loading' && status.jobs.length === 0) return only(t('loading'))
       if (status.kind === 'error') return only(`${t('loadFailed')} ${status.error || ''}`)
       if (status.jobs.length === 0) return only(t('empty'))
@@ -1663,9 +1976,9 @@ window.__ModuleLoader__.load({
         h('div', { className: 'noagent-controls' },
         h('nav', { className: 'noagent-categories', 'aria-label': t('categories') },
           [{ key: '', label: t('allCategories'), jobs: status.jobs }, ...allGroups].map((group) =>
-            h('button', {
-              key: group.key, type: 'button', className: 'noagent-button noagent-category',
-              'aria-pressed': category === group.key ? 'true' : 'false',
+            h(UI.Pill, {
+              key: group.key,
+              active: category === group.key,
               onClick: () => change(setCategory, group.key),
             }, group.label, h('span', { className: 'noagent-category-count' }, String(group.jobs.length))),
           ),
@@ -1673,27 +1986,18 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'noagent-toolbar' },
-          h('input', {
-            className: 'noagent-search',
-            type: 'search',
+          h(UI.SearchInput, {
             placeholder: t('searchPlaceholder'),
             'aria-label': t('searchPlaceholder'),
             value: query,
-            onChange: (event) => change(setQuery, event.target.value),
+            onChange: (value) => change(setQuery, value),
           }),
-          h(
-            'div',
-            { className: 'noagent-seg' },
-            filters.map((item) =>
-              h('button', {
-                key: item.key,
-                type: 'button',
-                'data-on': filter === item.key ? 'true' : 'false',
-                'aria-pressed': filter === item.key ? 'true' : 'false',
-                onClick: () => change(setFilter, item.key),
-              }, item.label),
-            ),
-          ),
+          h(UI.SegmentedTabs, {
+            tabs: filters.map((item) => ({ value: item.key, label: item.label })),
+            value: filter,
+            onChange: (key) => change(setFilter, key),
+            ariaLabel: t('categories'),
+          }),
           h('select', {
             className: 'noagent-input noagent-select', 'aria-label': t('sortLabel'),
             value: sort, onChange: (event) => change(setSort, event.target.value),
@@ -1730,7 +2034,7 @@ window.__ModuleLoader__.load({
             ? h('button', { type: 'button', className: 'noagent-button', onClick: reset }, t('resetFilters')) : null,
         )),
         visible.length === 0
-          ? h('div', { className: 'noagent-table-wrap' }, h('p', { className: 'noagent-empty' }, t('emptyFiltered')))
+          ? h('div', { className: 'noagent-table-wrap' }, h(UI.EmptyState, null, t('emptyFiltered')))
           : h(JobTable, {
               t,
               lang,

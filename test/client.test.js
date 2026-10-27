@@ -14,17 +14,68 @@ function fakeReact() {
   return {
     Fragment: Symbol.for('react.fragment'),
     createElement(type, props, ...children) {
-      return { type, props: props ?? {}, children }
+      return { type, props: props ?? {}, children: children.flat(Infinity) }
     },
     useState(initial) {
       return [typeof initial === 'function' ? initial() : initial, () => {}]
     },
     useEffect() {},
+    useRef(value) {
+      return { current: value }
+    },
+    useMemo(fn) {
+      return fn()
+    },
+    useCallback(fn) {
+      return fn
+    },
     useId() {
       return 'test-id'
     },
   }
 }
+
+/**
+ * 反向核对替身覆盖面。
+ *
+ * 起因：这套测试曾经间歇报 `TypeError: useRef is not a function`，且落在
+ * `client.js` 的组件内部，一眼看不出是「替身没实现」还是「真 bug」。
+ * 根因是 fakeReact() 是手工维护的 React 替身——组件新用一个 hook、替身没跟上，
+ * 报错现场远离真正的失误点。
+ *
+ * 与其等它再咬一次，不如静态扫出 client.js 用到哪些 React API，逐个核对替身。
+ * 这样「缺替身」立刻变成一条指名道姓的失败，而不是组件里的神秘 TypeError。
+ */
+test('fakeReact 覆盖 client.js 用到的全部 React API', () => {
+  const stub = fakeReact()
+  // 去掉注释再扫，免得文档里提到的 hook 造成误报
+  const source = clientSource
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+
+  const used = new Set()
+  // 只扫裸标识符：`props.useStatus()` 这种来自宿主的注入（不是 React API），
+  // 由 DSH 通过 slot 的 inject 传进来，不需要替身。
+  for (const m of source.matchAll(/(?<![.\w$])use[A-Z][A-Za-z0-9]*\b/g)) used.add(m[0])
+  for (const m of source.matchAll(/\bReact\.([A-Za-z_$][\w$]*)/g)) used.add(m[1])
+
+  // 自定义 hook（client.js 自己声明的 useXxx）不需要替身——只有来自 React 的才需要
+  const selfDefined = new Set()
+  for (const m of source.matchAll(/\b(?:function|const|let|var)\s+(use[A-Z][A-Za-z0-9]*)/g)) {
+    selfDefined.add(m[1])
+  }
+
+  const missing = [...used]
+    .filter((api) => !selfDefined.has(api))
+    .filter((api) => typeof stub[api] === 'undefined')
+    .sort()
+  assert.deepEqual(
+    missing,
+    [],
+    `fakeReact() 缺少这些 React API 的替身: ${missing.join(', ')}。` +
+      ' 缺了会在组件内部报 "X is not a function"，请在本文件的 fakeReact() 里补上。',
+  )
+})
 
 /**
  * 在 vm 里加载 client.js（浏览器 ModuleLoader 协议），返回 factory 产物。
